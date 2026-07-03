@@ -41,6 +41,21 @@
   text-shadow: 0 0 6px rgba(255, 45, 149, 0.6);
 }
 
+.hud-mode--flash {
+  animation: hud-mode-flash 0.5s ease-out;
+}
+
+@keyframes hud-mode-flash {
+  0% {
+    transform: translateX(-50%) scale(1.18);
+    box-shadow: 0 0 0 2px currentColor, 0 0 18px currentColor;
+  }
+  100% {
+    transform: translateX(-50%) scale(1);
+    box-shadow: none;
+  }
+}
+
 .hud-hint {
   position: fixed;
   bottom: 84px;

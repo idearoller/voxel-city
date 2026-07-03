@@ -36,8 +36,13 @@ export class FlyController {
   private readonly right = new THREE.Vector3();
 
   constructor(private readonly camera: THREE.Camera) {
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
+    // Guarded so FlyController can be constructed in non-browser contexts
+    // (unit/integration tests, e.g. via ModeManager) that never dispatch
+    // real DOM key events.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this.onKeyDown);
+      window.addEventListener('keyup', this.onKeyUp);
+    }
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -103,7 +108,9 @@ export class FlyController {
   }
 
   dispose(): void {
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.onKeyDown);
+      window.removeEventListener('keyup', this.onKeyUp);
+    }
   }
 }

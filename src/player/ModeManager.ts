@@ -34,7 +34,12 @@ export class ModeManager {
   ) {
     this.flyController = new FlyController(camera);
     this.playController = new PlayController(camera, world);
-    window.addEventListener('keydown', this.onKeyDown);
+    // Guarded so ModeManager can be constructed in non-browser contexts
+    // (unit/integration tests) that drive mode transitions via
+    // enterPlayMode()/enterSandboxMode() directly.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this.onKeyDown);
+    }
   }
 
   get currentMode(): Mode {
@@ -70,20 +75,29 @@ export class ModeManager {
 
   private toggle(): void {
     if (this.mode === 'sandbox') {
-      this.enterPlay();
+      this.enterPlayMode();
     } else {
-      this.enterSandbox();
+      this.enterSandboxMode();
     }
   }
 
-  private enterPlay(): void {
+  /**
+   * Switches to play mode and drops the player onto solid ground below the
+   * camera's current xz (see `findSpawn`). Used both for the Tab toggle and
+   * to put the player on the street right after city generation/import,
+   * where the caller has already positioned the camera above the spawn
+   * point — so "below the camera" and "the generated spawn point" are the
+   * same place.
+   */
+  enterPlayMode(): void {
     this.mode = 'play';
     const spawnFeet = this.findSpawn();
     this.playController.setFeet(spawnFeet);
     this.emitModeChange();
   }
 
-  private enterSandbox(): void {
+  /** Switches to sandbox (fly) mode, keeping the camera at its current position. */
+  enterSandboxMode(): void {
     this.mode = 'sandbox';
     this.emitModeChange();
   }
@@ -92,12 +106,20 @@ export class ModeManager {
     for (const listener of this.listeners) listener(this.mode);
   }
 
-  /** Drops from above the camera's current xz onto the first solid voxel found, or a safe default. */
+  /**
+   * Drops from above the camera's current xz onto the first solid voxel
+   * found, or a safe default. Scans down from the camera's own height
+   * rather than the world ceiling: on startup the camera sits at
+   * spawn+6 directly above the street, so this finds the asphalt; on a
+   * Tab-from-fly toggle it means "drop onto whatever is under me", which
+   * correctly stops at a bridge/walkway deck below a sandbox-flying camera
+   * instead of tunneling through it down to street level.
+   */
   private findSpawn(): readonly [number, number, number] {
     const isSolid = (x: number, y: number, z: number): boolean => this.world.isSolid(x, y, z);
     const x = Math.floor(this.camera.position.x);
     const z = Math.floor(this.camera.position.z);
-    const topY = WORLD_SIZE_Y - 1;
+    const topY = Math.min(WORLD_SIZE_Y - 1, Math.ceil(this.camera.position.y));
 
     const atCamera = findSpawnFeet(isSolid, x, z, topY);
     if (atCamera) return atCamera;
@@ -109,7 +131,9 @@ export class ModeManager {
   }
 
   dispose(): void {
-    window.removeEventListener('keydown', this.onKeyDown);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.onKeyDown);
+    }
     this.flyController.dispose();
     this.playController.dispose();
   }

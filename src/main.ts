@@ -185,6 +185,10 @@ async function runGeneration(seed: string): Promise<void> {
   spawnAboveCity(seed);
   chunkRenderer.rebuildAllDirty();
   refreshEnvironmentProbe();
+  // Land the player on the street in play mode rather than leaving them
+  // floating in sandbox fly — the camera is already sitting above the
+  // generated spawn point, so this drops straight onto it.
+  modeManager.enterPlayMode();
   overlay.classList.remove('visible');
 }
 
@@ -242,6 +246,9 @@ async function importCity(file: File): Promise<void> {
     spawnAboveImportedCity();
     chunkRenderer.rebuildAllDirty();
     refreshEnvironmentProbe();
+    // Same rationale as runGeneration: drop the player onto the street
+    // (layout-free ASPHALT spawn) in play mode instead of sandbox fly.
+    modeManager.enterPlayMode();
   } catch (error) {
     const message =
       error instanceof SerializerError ? error.message : 'Failed to import .vxc file: not a valid city save.';
