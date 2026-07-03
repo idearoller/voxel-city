@@ -1,9 +1,12 @@
 import * as THREE from 'three';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
-import { FlyController } from './player/FlyController';
+import { ModeManager } from './player/ModeManager';
 import { LookControls } from './player/LookControls';
+import { aabbFromFeet, voxelIntersectsAabb } from './player/PlayerCollision';
+import { raycastVoxels } from './player/VoxelRaycast';
 import {
+  AIR,
   ASPHALT,
   CONCRETE,
   METAL,
@@ -13,8 +16,12 @@ import {
   WINDOW_LIT,
 } from './world/BlockRegistry';
 import { World } from './world/World';
+import { Hud } from './ui/Hud';
+import { Palette } from './ui/Palette';
+import './ui/ui.css';
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
+const uiRoot = document.getElementById('ui-root') as HTMLElement;
 const engine = new Engine(canvas);
 
 engine.camera.position.set(64, 20, 80);
@@ -30,12 +37,66 @@ sunLight.position.set(120, 150, 80);
 engine.scene.add(sunLight);
 
 const lookControls = new LookControls(engine.camera, canvas);
-const flyController = new FlyController(engine.camera);
-void lookControls;
+const modeManager = new ModeManager(engine.camera, world);
+
+const hud = new Hud(uiRoot);
+const palette = new Palette(uiRoot, canvas);
+modeManager.onModeChange((mode) => hud.setMode(mode));
+
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+
+// ---------------------------------------------------------------------------
+// Target-block highlight: a thin edge box snapped to whatever voxel the
+// crosshair is currently over, hidden when nothing is in reach.
+// ---------------------------------------------------------------------------
+const highlightGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+const highlightMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, toneMapped: false });
+const highlightBox = new THREE.LineSegments(highlightGeometry, highlightMaterial);
+highlightBox.visible = false;
+engine.scene.add(highlightBox);
+
+const rayOrigin = new THREE.Vector3();
+const rayDirection = new THREE.Vector3();
+
+function currentHit() {
+  engine.camera.getWorldPosition(rayOrigin);
+  engine.camera.getWorldDirection(rayDirection);
+  return raycastVoxels({
+    origin: [rayOrigin.x, rayOrigin.y, rayOrigin.z],
+    direction: [rayDirection.x, rayDirection.y, rayDirection.z],
+    maxDistance: modeManager.reach,
+    isSolid: (x, y, z) => world.isSolid(x, y, z),
+  });
+}
+
+canvas.addEventListener('mousedown', (event) => {
+  if (document.pointerLockElement !== canvas) return;
+
+  const hit = currentHit();
+  if (!hit) return;
+
+  if (event.button === 0) {
+    // Left click: remove the targeted voxel.
+    world.setBlock(hit.pos[0], hit.pos[1], hit.pos[2], AIR);
+  } else if (event.button === 2) {
+    // Right click: place the selected block on the face the ray entered through.
+    const placeX = hit.pos[0] + hit.normal[0];
+    const placeY = hit.pos[1] + hit.normal[1];
+    const placeZ = hit.pos[2] + hit.normal[2];
+
+    if (modeManager.currentMode === 'play') {
+      const playerBox = aabbFromFeet(modeManager.playerFeet);
+      if (voxelIntersectsAabb([placeX, placeY, placeZ], playerBox)) return;
+    }
+
+    world.setBlock(placeX, placeY, placeZ, palette.selectedBlockId);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // TEMP TEST TERRAIN — remove in M4 once real procgen (gen/CityGenerator.ts)
-// exists. Only here to visually verify meshing, AO, colors, chunk borders.
+// exists. Only here to visually verify meshing, AO, colors, chunk borders,
+// and (M2/M3) editing + collision against hand-built geometry.
 // ---------------------------------------------------------------------------
 function buildTestTerrain(): void {
   const GROUND_ORIGIN_X = 32;
@@ -81,7 +142,7 @@ function buildTestTerrain(): void {
     world.setBlockRaw(neonX, neonBaseY + i, buildingZ + 2, i % 2 === 0 ? NEON_PINK : NEON_CYAN);
   }
 
-  // Staircase of full blocks to eyeball AO + culling on a non-flat surface.
+  // Staircase of full blocks — collision test bed for M3 auto-step.
   const stairX = GROUND_ORIGIN_X + 40;
   const stairZBase = GROUND_ORIGIN_Z + 10;
   const stairSteps = 10;
@@ -100,7 +161,7 @@ buildTestTerrain();
 
 engine.start({
   update: (dt) => {
-    flyController.update(dt);
+    modeManager.update(dt);
   },
   render: () => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):
@@ -108,5 +169,15 @@ engine.start({
     // frame, and running the rebuild budget there would blow past the
     // intended ~4-chunks/frame cap right when the machine is already behind.
     chunkRenderer.update();
+
+    const hit = currentHit();
+    if (hit) {
+      highlightBox.position.set(hit.pos[0] + 0.5, hit.pos[1] + 0.5, hit.pos[2] + 0.5);
+      highlightBox.visible = true;
+    } else {
+      highlightBox.visible = false;
+    }
   },
 });
+
+void lookControls;

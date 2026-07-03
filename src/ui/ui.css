@@ -1,0 +1,86 @@
+/* Shared DOM overlay styling: dark glass panels + neon accents. */
+
+:root {
+  --glass-bg: rgba(12, 10, 20, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --neon-cyan: #2df5ff;
+  --neon-pink: #ff2d95;
+}
+
+.hud-crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 4px rgba(45, 245, 255, 0.8);
+}
+
+.hud-mode {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--neon-cyan);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  text-shadow: 0 0 6px rgba(45, 245, 255, 0.6);
+}
+
+.hud-mode.play {
+  color: var(--neon-pink);
+  text-shadow: 0 0 6px rgba(255, 45, 149, 0.6);
+}
+
+.hud-hint {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+.palette {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+}
+
+.palette-swatch {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-sizing: border-box;
+  transition: transform 0.08s ease, border-color 0.08s ease, box-shadow 0.08s ease;
+}
+
+.palette-swatch.selected {
+  border-color: #ffffff;
+  transform: translateY(-4px);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
