@@ -19,6 +19,7 @@ const BLOOM_RESOLUTION_SCALE = 0.5;
 export class PostFX {
   private readonly composer: EffectComposer;
   private readonly bloomPass: UnrealBloomPass;
+  private readonly outputPass: OutputPass;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
     const size = renderer.getSize(new THREE.Vector2());
@@ -39,7 +40,8 @@ export class PostFX {
     );
     this.composer.addPass(this.bloomPass);
 
-    this.composer.addPass(new OutputPass());
+    this.outputPass = new OutputPass();
+    this.composer.addPass(this.outputPass);
   }
 
   /** Day/night cycle modulates bloom strength (day 0.35 / night 0.95, see `dayNight.ts`). */
@@ -54,5 +56,17 @@ export class PostFX {
 
   render(): void {
     this.composer.render();
+  }
+
+  /**
+   * Disposes the composer's own render targets plus every pass's GPU
+   * resources. Mirrors `EnvironmentProbe.dispose` / `Atmosphere.dispose`.
+   * Phase-2 teardown hook, intentionally uncalled today: main.ts never
+   * tears the app down (single page, lives for the whole session).
+   */
+  dispose(): void {
+    this.composer.dispose();
+    this.bloomPass.dispose();
+    this.outputPass.dispose();
   }
 }

@@ -1,6 +1,6 @@
 import { AIR, getBlock } from './BlockRegistry';
 import { Chunk } from './Chunk';
-import { CHUNK_SIZE, chunkKey, isInBounds, worldToChunk, worldToLocal } from './coords';
+import { CHUNK_SIZE, chunkKey, isInBounds, parseChunkKey, worldToChunk, worldToLocal } from './coords';
 
 export type ChunkDirtyListener = (key: string) => void;
 
@@ -43,6 +43,32 @@ export class World {
   /** Directly access an already-allocated chunk, if any (used by the mesher). */
   peekChunk(cx: number, cy: number, cz: number): Chunk | undefined {
     return this.getChunk(cx, cy, cz);
+  }
+
+  /**
+   * Every currently-allocated chunk with its coordinate, for bulk consumers
+   * like the `.vxc` exporter (see `io/Serializer.ts`). Read-only — callers
+   * must not mutate the returned chunks' voxel arrays in place.
+   */
+  allocatedChunkEntries(): { cx: number; cy: number; cz: number; chunk: Chunk }[] {
+    const entries: { cx: number; cy: number; cz: number; chunk: Chunk }[] = [];
+    for (const [key, chunk] of this.chunks) {
+      const { cx, cy, cz } = parseChunkKey(key);
+      entries.push({ cx, cy, cz, chunk });
+    }
+    return entries;
+  }
+
+  /**
+   * Bulk-loads a full chunk's raw voxel bytes (already in `Chunk.voxels`'
+   * flat local-index layout) directly into the chunk at (cx, cy, cz),
+   * allocating it if necessary. No dirty notification — pair with
+   * `remeshAll()` afterwards, same convention as `setBlockRaw`. Used by the
+   * `.vxc` importer to restore serialized chunks without a per-voxel loop.
+   */
+  loadChunkRaw(cx: number, cy: number, cz: number, voxels: Uint8Array): void {
+    const chunk = this.getOrCreateChunk(cx, cy, cz);
+    chunk.voxels.set(voxels);
   }
 
   getBlock(x: number, y: number, z: number): number {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { District } from '../src/gen/districts';
 import { createRng } from '../src/gen/rng';
-import { CellType, cellAt, findSpawnPoint, planLayout } from '../src/gen/layout';
+import { CellType, cellAt, findGroundSpawnPoint, findSpawnPoint, planLayout } from '../src/gen/layout';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../src/world/coords';
 
 const MIN_PARCEL_SIZE = 8;
@@ -153,5 +153,33 @@ describe('findSpawnPoint', () => {
     const layout = layoutFor('spawn-point');
     const spawn = findSpawnPoint(layout);
     expect(cellAt(layout, spawn.x, spawn.z)).toBe(CellType.ROAD);
+  });
+});
+
+describe('findGroundSpawnPoint', () => {
+  it('spirals outward from the center to the nearest cell satisfying the predicate', () => {
+    const gridSize = 20;
+    const roadCell = { x: 12, z: 8 };
+    const spawn = findGroundSpawnPoint(
+      (x, z) => x === roadCell.x && z === roadCell.z,
+      gridSize,
+      gridSize,
+    );
+    expect(spawn).toEqual(roadCell);
+  });
+
+  it('falls back to the grid center when nothing satisfies the predicate', () => {
+    const spawn = findGroundSpawnPoint(() => false, 10, 10);
+    expect(spawn).toEqual({ x: 5, z: 5 });
+  });
+
+  it('works without a CityLayout — e.g. probing raw World voxel data after a .vxc import', () => {
+    // Same underlying algorithm findSpawnPoint uses, but driven by a plain
+    // (x, z) -> boolean predicate instead of a CityLayout, exactly how
+    // main.ts probes World.getBlock(x, GROUND_SURFACE_Y, z) === ASPHALT
+    // post-import when there is no CityLayout to consult.
+    const isRoadAt = (x: number, z: number) => x === WORLD_SIZE_X / 2 + 3 && z === WORLD_SIZE_Z / 2;
+    const spawn = findGroundSpawnPoint(isRoadAt, WORLD_SIZE_X, WORLD_SIZE_Z);
+    expect(isRoadAt(spawn.x, spawn.z)).toBe(true);
   });
 });

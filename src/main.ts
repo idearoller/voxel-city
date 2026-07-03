@@ -10,11 +10,14 @@ import { ModeManager } from './player/ModeManager';
 import { LookControls } from './player/LookControls';
 import { aabbFromFeet, voxelIntersectsAabb } from './player/PlayerCollision';
 import { raycastVoxels } from './player/VoxelRaycast';
-import { generateCity } from './gen/CityGenerator';
-import { findSpawnPoint } from './gen/layout';
-import { AIR } from './world/BlockRegistry';
-import { WORLD_SIZE_X, WORLD_SIZE_Z } from './world/coords';
+import { GROUND_SURFACE_Y, generateCity } from './gen/CityGenerator';
+import { findGroundSpawnPoint, findSpawnPoint } from './gen/layout';
+import { SerializerError, importWorld, serializeWorld } from './io/Serializer';
+import { AIR, ASPHALT } from './world/BlockRegistry';
+import { CHUNK_SIZE, WORLD_SIZE_X, WORLD_SIZE_Y, WORLD_SIZE_Z } from './world/coords';
 import { World } from './world/World';
+import { ErrorToast } from './ui/ErrorToast';
+import { FpsCounter } from './ui/FpsCounter';
 import { Hud } from './ui/Hud';
 import { Palette } from './ui/Palette';
 import { Toolbar } from './ui/Toolbar';
@@ -75,7 +78,11 @@ const modeManager = new ModeManager(engine.camera, world);
 
 const hud = new Hud(uiRoot);
 const palette = new Palette(uiRoot, canvas);
+const errorToast = new ErrorToast(uiRoot);
 modeManager.onModeChange((mode) => hud.setMode(mode));
+
+// Dev-only FPS readout, toggled with F3; never constructed in a production build.
+const fpsCounter = import.meta.env.DEV ? new FpsCounter(uiRoot) : null;
 
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
@@ -161,6 +168,9 @@ async function nextPaintedFrame(): Promise<void> {
   await nextFrame();
 }
 
+/** The most recently generated/imported seed — shown in the toolbar and used as the export filename/meta. */
+let currentSeed = DEFAULT_SEED;
+
 function spawnAboveCity(seed: string): void {
   const layout = generateCity(world, seed).layout;
   const spawn = findSpawnPoint(layout);
@@ -171,10 +181,74 @@ function spawnAboveCity(seed: string): void {
 async function runGeneration(seed: string): Promise<void> {
   overlay.classList.add('visible');
   await nextPaintedFrame();
+  currentSeed = seed;
   spawnAboveCity(seed);
   chunkRenderer.rebuildAllDirty();
   refreshEnvironmentProbe();
   overlay.classList.remove('visible');
+}
+
+// ---------------------------------------------------------------------------
+// Export/import (.vxc): DOM glue only — actual encode/decode/apply lives in
+// io/Serializer.ts, which stays free of DOM and Three.js dependencies.
+// ---------------------------------------------------------------------------
+
+function exportCity(): void {
+  const buffer = serializeWorld(world, {
+    seed: currentSeed,
+    timeOfDay: atmosphere.currentTimeOfDay,
+    bounds: { x: WORLD_SIZE_X, y: WORLD_SIZE_Y, z: WORLD_SIZE_Z },
+    chunkSize: CHUNK_SIZE,
+  });
+  const blob = new Blob([buffer], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `city-${currentSeed}.vxc`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * `generateCity`'s spawn placement uses `findSpawnPoint(layout)`, but an
+ * imported city has no `CityLayout` (it's a 2D planning artifact that's
+ * never serialized) — only voxel data. This is the layout-free fallback:
+ * probe `World.getBlock` for a road-surface block at ground level instead of
+ * consulting a layout's road cells. Same spiral-outward search either way.
+ */
+function spawnAboveImportedCity(): void {
+  const spawn = findGroundSpawnPoint(
+    (x, z) => world.getBlock(x, GROUND_SURFACE_Y, z) === ASPHALT,
+    WORLD_SIZE_X,
+    WORLD_SIZE_Z,
+  );
+  engine.camera.position.set(spawn.x + 0.5, SPAWN_HEIGHT_ABOVE_ROAD, spawn.z + 0.5);
+  environmentProbePosition.set(WORLD_SIZE_X / 2, ENVIRONMENT_PROBE_HEIGHT, WORLD_SIZE_Z / 2);
+}
+
+async function importCity(file: File): Promise<void> {
+  overlay.classList.add('visible');
+  await nextPaintedFrame();
+  try {
+    const buffer = await file.arrayBuffer();
+    const meta = importWorld(world, buffer);
+    currentSeed = meta.seed;
+    toolbar.setSeed(currentSeed);
+    // meta.timeOfDay comes from parsed-but-unvalidated JSON; a NaN/Infinity
+    // here would poison Atmosphere.setTimeOfDay's modulo forever.
+    if (Number.isFinite(meta.timeOfDay)) {
+      atmosphere.setTimeOfDay(meta.timeOfDay);
+    }
+    spawnAboveImportedCity();
+    chunkRenderer.rebuildAllDirty();
+    refreshEnvironmentProbe();
+  } catch (error) {
+    const message =
+      error instanceof SerializerError ? error.message : 'Failed to import .vxc file: not a valid city save.';
+    errorToast.show(message);
+  } finally {
+    overlay.classList.remove('visible');
+  }
 }
 
 const toolbar = new Toolbar(uiRoot, DEFAULT_SEED);
@@ -188,6 +262,10 @@ toolbar.onTogglePause(() => {
 toolbar.onToggleRain(() => {
   rain.toggle();
   toolbar.setRainEnabled(rain.enabled);
+});
+toolbar.onExportRequest(() => exportCity());
+toolbar.onImportRequest((file) => {
+  void importCity(file);
 });
 
 void runGeneration(DEFAULT_SEED);
@@ -216,6 +294,8 @@ engine.start({
     } else {
       highlightBox.visible = false;
     }
+
+    fpsCounter?.tick();
   },
 });
 

@@ -98,7 +98,7 @@ export class Atmosphere {
   private paused = false;
   private bloomStrengthListener: ((strength: number) => void) | null = null;
 
-  constructor(scene: THREE.Scene) {
+  constructor(private readonly scene: THREE.Scene) {
     this.sky = buildSky();
     this.stars = buildStars();
     this.hemiLight = new THREE.HemisphereLight(0x8a7fd6, 0x120a1a, 0.25);
@@ -182,5 +182,21 @@ export class Atmosphere {
    */
   get nightFactor(): number {
     return interpolateAtmosphere(this.timeOfDay).starOpacity;
+  }
+
+  /**
+   * Removes every object this instance added to the scene and disposes
+   * their GPU resources (geometry/material). Mirrors `EnvironmentProbe.
+   * dispose` / `PostFX.dispose`. Phase-2 teardown hook: main.ts never tears
+   * the app down today (single page, lives for the whole session), so
+   * nothing calls this yet — it exists so a future teardown path (e.g.
+   * hot-swapping scenes) doesn't have to retrofit disposal here.
+   */
+  dispose(): void {
+    this.scene.remove(this.sky, this.stars, this.hemiLight, this.moonLight);
+    this.sky.geometry.dispose();
+    (this.sky.material as THREE.ShaderMaterial).dispose();
+    this.stars.geometry.dispose();
+    this.starsMaterial.dispose();
   }
 }

@@ -215,25 +215,49 @@ export function cellAt(layout: CityLayout, x: number, z: number): CellType {
 }
 
 /**
- * Finds a road cell near the plan's center (spiral outward search), for
- * spawning the player somewhere sensible after generation.
+ * Finds an (x, z) near the center of a `gridSizeX` x `gridSizeZ` plan for
+ * which `isRoad` is true, via a spiral outward search — for spawning the
+ * player somewhere sensible. Takes a predicate rather than a `CityLayout` so
+ * it also works for imported cities, which have voxel data but no
+ * `CityLayout` (that's a 2D planning artifact of `generateCity`, never
+ * serialized — see `io/Serializer.ts`): callers without a layout can instead
+ * probe `World.getBlock` for a road-surface block id at ground level.
  */
-export function findSpawnPoint(layout: CityLayout): { x: number; z: number } {
-  const centerX = Math.floor(layout.gridSizeX / 2);
-  const centerZ = Math.floor(layout.gridSizeZ / 2);
+export function findGroundSpawnPoint(
+  isRoad: (x: number, z: number) => boolean,
+  gridSizeX: number,
+  gridSizeZ: number,
+): { x: number; z: number } {
+  const centerX = Math.floor(gridSizeX / 2);
+  const centerZ = Math.floor(gridSizeZ / 2);
 
-  const maxRadius = Math.max(layout.gridSizeX, layout.gridSizeZ);
+  const maxRadius = Math.max(gridSizeX, gridSizeZ);
   for (let radius = 0; radius <= maxRadius; radius++) {
     for (let dx = -radius; dx <= radius; dx++) {
       for (let dz = -radius; dz <= radius; dz++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
         const x = centerX + dx;
         const z = centerZ + dz;
-        if (cellAt(layout, x, z) === CellType.ROAD) {
+        if (x < 0 || x >= gridSizeX || z < 0 || z >= gridSizeZ) continue;
+        if (isRoad(x, z)) {
           return { x, z };
         }
       }
     }
   }
   return { x: centerX, z: centerZ };
+}
+
+/**
+ * Finds a road cell near the plan's center, for spawning the player
+ * somewhere sensible right after generation (when a `CityLayout` is on
+ * hand). See `findGroundSpawnPoint` for the layout-free equivalent used
+ * after importing a `.vxc` city.
+ */
+export function findSpawnPoint(layout: CityLayout): { x: number; z: number } {
+  return findGroundSpawnPoint(
+    (x, z) => cellAt(layout, x, z) === CellType.ROAD,
+    layout.gridSizeX,
+    layout.gridSizeZ,
+  );
 }

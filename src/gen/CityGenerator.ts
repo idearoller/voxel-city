@@ -39,7 +39,7 @@ import type { World } from '../world/World';
 /** Ground floor sits above the two-voxel-thick ground slab (y=0 concrete, y=1 road surface). */
 export const BUILDING_BASE_Y = 2;
 /** The walkable ground-surface row painted by `paintGround` (road/sidewalk, or grass/gravel for parks). */
-const GROUND_SURFACE_Y = BUILDING_BASE_Y - 1;
+export const GROUND_SURFACE_Y = BUILDING_BASE_Y - 1;
 
 export interface GenerationResult {
   layout: CityLayout;
