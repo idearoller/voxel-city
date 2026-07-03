@@ -1,3 +1,4 @@
+import { AIR } from './BlockRegistry';
 import { CHUNK_VOXEL_COUNT, localIndex } from './coords';
 
 /**
@@ -18,5 +19,10 @@ export class Chunk {
 
   setLocal(lx: number, ly: number, lz: number, id: number): void {
     this.voxels[localIndex(lx, ly, lz)] = id;
+  }
+
+  /** Resets every voxel in this chunk to AIR, in place. */
+  clear(): void {
+    this.voxels.fill(AIR);
   }
 }

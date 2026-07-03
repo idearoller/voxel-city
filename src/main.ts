@@ -5,26 +5,21 @@ import { ModeManager } from './player/ModeManager';
 import { LookControls } from './player/LookControls';
 import { aabbFromFeet, voxelIntersectsAabb } from './player/PlayerCollision';
 import { raycastVoxels } from './player/VoxelRaycast';
-import {
-  AIR,
-  ASPHALT,
-  CONCRETE,
-  METAL,
-  NEON_CYAN,
-  NEON_PINK,
-  SIDEWALK,
-  WINDOW_LIT,
-} from './world/BlockRegistry';
+import { generateCity } from './gen/CityGenerator';
+import { findSpawnPoint } from './gen/layout';
+import { AIR } from './world/BlockRegistry';
 import { World } from './world/World';
 import { Hud } from './ui/Hud';
 import { Palette } from './ui/Palette';
+import { Toolbar } from './ui/Toolbar';
 import './ui/ui.css';
+
+const DEFAULT_SEED = 'night-city-01';
+const SPAWN_HEIGHT_ABOVE_ROAD = 6;
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const uiRoot = document.getElementById('ui-root') as HTMLElement;
 const engine = new Engine(canvas);
-
-engine.camera.position.set(64, 20, 80);
 
 const world = new World();
 const chunkRenderer = new ChunkRenderer(world, engine.scene);
@@ -94,70 +89,57 @@ canvas.addEventListener('mousedown', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// TEMP TEST TERRAIN — remove in M4 once real procgen (gen/CityGenerator.ts)
-// exists. Only here to visually verify meshing, AO, colors, chunk borders,
-// and (M2/M3) editing + collision against hand-built geometry.
+// Procedural city generation: seed UI (Toolbar) + a loading overlay, since
+// generateCity() (plus the full mesh rebuild below) is synchronous and can
+// take a noticeable moment on the full 384x384 plan. We show the overlay,
+// yield two animation frames so the "visible" class actually gets painted
+// before the heavy synchronous work blocks the main thread — a single rAF
+// resolves as a microtask *before* the browser paints, so the overlay would
+// never actually appear on screen — then generate, flush every resulting
+// dirty chunk into meshes in one go (see ChunkRenderer.rebuildAllDirty), and
+// only then drop the camera and hide the overlay. Without that flush,
+// remeshAll() marks 300+ chunks dirty and the budgeted per-frame update()
+// would dribble the city in chunk-by-chunk over dozens of frames on a now-
+// hidden overlay.
 // ---------------------------------------------------------------------------
-function buildTestTerrain(): void {
-  const GROUND_ORIGIN_X = 32;
-  const GROUND_ORIGIN_Z = 32;
-  const GROUND_SIZE = 128;
+const overlay = document.createElement('div');
+overlay.className = 'gen-overlay';
+const overlayText = document.createElement('div');
+overlayText.className = 'gen-overlay-text';
+overlayText.textContent = 'GENERATING SECTOR…';
+overlay.appendChild(overlayText);
+uiRoot.appendChild(overlay);
 
-  // Flat ground: checker of SIDEWALK / ASPHALT across two chunk rows (y=0..1).
-  for (let x = 0; x < GROUND_SIZE; x++) {
-    for (let z = 0; z < GROUND_SIZE; z++) {
-      const worldX = GROUND_ORIGIN_X + x;
-      const worldZ = GROUND_ORIGIN_Z + z;
-      const isRoadLane = z % 16 < 6;
-      const surface = isRoadLane ? ASPHALT : SIDEWALK;
-      world.setBlockRaw(worldX, 0, worldZ, CONCRETE);
-      world.setBlockRaw(worldX, 1, worldZ, surface);
-    }
-  }
-
-  // Small concrete test building with a lit-window pattern on its south face.
-  const buildingX = GROUND_ORIGIN_X + 20;
-  const buildingZ = GROUND_ORIGIN_Z + 20;
-  const buildingWidth = 8;
-  const buildingDepth = 8;
-  const buildingHeight = 14;
-  for (let x = 0; x < buildingWidth; x++) {
-    for (let z = 0; z < buildingDepth; z++) {
-      for (let y = 2; y < 2 + buildingHeight; y++) {
-        const isShell = x === 0 || x === buildingWidth - 1 || z === 0 || z === buildingDepth - 1;
-        if (!isShell) continue;
-        const isSouthFace = z === 0;
-        const isWindowSpot =
-          isSouthFace && x % 2 === 1 && (y - 2) % 2 === 1 && (x + y) % 3 !== 0;
-        const block = isWindowSpot ? WINDOW_LIT : CONCRETE;
-        world.setBlockRaw(buildingX + x, y, buildingZ + z, block);
-      }
-    }
-  }
-
-  // Neon sign strip on the building's east flank.
-  const neonX = buildingX + buildingWidth;
-  const neonBaseY = 4;
-  for (let i = 0; i < 6; i++) {
-    world.setBlockRaw(neonX, neonBaseY + i, buildingZ + 2, i % 2 === 0 ? NEON_PINK : NEON_CYAN);
-  }
-
-  // Staircase of full blocks — collision test bed for M3 auto-step.
-  const stairX = GROUND_ORIGIN_X + 40;
-  const stairZBase = GROUND_ORIGIN_Z + 10;
-  const stairSteps = 10;
-  for (let step = 0; step < stairSteps; step++) {
-    for (let h = 0; h <= step; h++) {
-      for (let w = 0; w < 4; w++) {
-        world.setBlockRaw(stairX + w, 2 + h, stairZBase + step, METAL);
-      }
-    }
-  }
-
-  world.remeshAll();
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-buildTestTerrain();
+/** Waits for two animation frames, guaranteeing at least one real paint has happened in between. */
+async function nextPaintedFrame(): Promise<void> {
+  await nextFrame();
+  await nextFrame();
+}
+
+function spawnAboveCity(seed: string): void {
+  const layout = generateCity(world, seed).layout;
+  const spawn = findSpawnPoint(layout);
+  engine.camera.position.set(spawn.x + 0.5, SPAWN_HEIGHT_ABOVE_ROAD, spawn.z + 0.5);
+}
+
+async function runGeneration(seed: string): Promise<void> {
+  overlay.classList.add('visible');
+  await nextPaintedFrame();
+  spawnAboveCity(seed);
+  chunkRenderer.rebuildAllDirty();
+  overlay.classList.remove('visible');
+}
+
+const toolbar = new Toolbar(uiRoot, DEFAULT_SEED);
+toolbar.onGenerateRequest((seed) => {
+  void runGeneration(seed);
+});
+
+void runGeneration(DEFAULT_SEED);
 
 engine.start({
   update: (dt) => {

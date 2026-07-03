@@ -99,6 +99,18 @@ export class World {
     }
   }
 
+  /**
+   * Resets every already-allocated chunk to all-AIR, without deallocating
+   * them or emitting dirty events. Used by the city generator to wipe a
+   * previous generation before regenerating with a new seed; pair with
+   * `remeshAll()` afterwards to refresh the renderer.
+   */
+  clear(): void {
+    for (const chunk of this.chunks.values()) {
+      chunk.clear();
+    }
+  }
+
   private markBorderNeighborsDirty(
     cx: number,
     cy: number,

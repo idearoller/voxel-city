@@ -17,6 +17,11 @@ const DIGIT_KEY_TO_INDEX: ReadonlyMap<string, number> = new Map([
   ['Digit0', 9],
 ]);
 
+/** True while the user is typing into a text input (e.g. the Toolbar seed field) — digit/wheel hotkeys must not fire then. */
+function isTypingIntoInput(): boolean {
+  return document.activeElement instanceof HTMLInputElement;
+}
+
 function cssColor(block: BlockDef): string {
   const [r, g, b] = block.color;
   return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
@@ -65,6 +70,7 @@ export class Palette {
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
+    if (isTypingIntoInput()) return;
     const index = DIGIT_KEY_TO_INDEX.get(event.code);
     if (index === undefined || index >= PLACEABLE_BLOCKS.length) return;
     this.select(index);
@@ -72,6 +78,7 @@ export class Palette {
 
   private onWheel = (event: WheelEvent): void => {
     if (document.pointerLockElement !== this.canvas) return;
+    if (isTypingIntoInput()) return;
     event.preventDefault();
     const direction = event.deltaY > 0 ? 1 : -1;
     const count = PLACEABLE_BLOCKS.length;

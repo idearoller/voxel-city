@@ -41,6 +41,27 @@ export class ChunkRenderer {
     }
   }
 
+  /** Number of chunks still awaiting a mesh rebuild. */
+  get pendingCount(): number {
+    return this.dirty.size;
+  }
+
+  /**
+   * Rebuilds every currently dirty chunk immediately, bypassing the
+   * per-frame budget. Used right after city generation while a loading
+   * overlay is still up: `remeshAll()` can mark 300+ chunks dirty at once,
+   * and draining that at REBUILD_BUDGET_PER_FRAME would dribble the city in
+   * chunk-by-chunk over dozens of frames with nothing to hide it. Doing the
+   * full flush in one synchronous burst — still behind the overlay — means
+   * the whole city appears at once instead.
+   */
+  rebuildAllDirty(): void {
+    for (const key of this.dirty) {
+      this.rebuildChunk(key);
+    }
+    this.dirty.clear();
+  }
+
   private rebuildChunk(key: string): void {
     this.disposeChunk(key);
 

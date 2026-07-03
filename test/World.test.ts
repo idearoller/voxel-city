@@ -102,3 +102,33 @@ describe('World dirty notification', () => {
     expect(seen).toContain(chunkKey(1, 0, 0));
   });
 });
+
+describe('World.clear', () => {
+  it('resets every allocated chunk to AIR without emitting dirty events', () => {
+    const world = new World();
+    world.setBlockRaw(1, 1, 1, CONCRETE);
+    world.setBlockRaw(40, 1, 1, CONCRETE);
+
+    const seen: string[] = [];
+    world.onChunkDirty((key) => seen.push(key));
+
+    world.clear();
+
+    expect(seen).toHaveLength(0);
+    expect(world.getBlock(1, 1, 1)).toBe(AIR);
+    expect(world.getBlock(40, 1, 1)).toBe(AIR);
+  });
+
+  it('leaves chunks allocated so a subsequent remeshAll clears their old geometry', () => {
+    const world = new World();
+    world.setBlockRaw(1, 1, 1, CONCRETE);
+
+    world.clear();
+
+    const seen: string[] = [];
+    world.onChunkDirty((key) => seen.push(key));
+    world.remeshAll();
+
+    expect(seen).toContain(chunkKey(0, 0, 0));
+  });
+});
