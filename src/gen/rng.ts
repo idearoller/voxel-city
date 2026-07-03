@@ -77,6 +77,16 @@ export class Rng {
   fork(label: string): Rng {
     return new Rng(hashString(`${this.seed}:${label}`));
   }
+
+  /**
+   * This stream's raw numeric seed. Exposed for generators that need a
+   * stable numeric key rather than sequential draws — e.g. value noise,
+   * which must hash arbitrary (x, z) lattice points on demand rather than
+   * consuming a linear sequence, so it can't use `random()`/`fork()`.
+   */
+  hashSeed(): number {
+    return this.seed;
+  }
 }
 
 /** Creates a root Rng from a string or numeric seed. */

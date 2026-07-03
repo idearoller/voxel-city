@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { District } from '../src/gen/districts';
 import { createRng } from '../src/gen/rng';
 import { CellType, cellAt, findSpawnPoint, planLayout } from '../src/gen/layout';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../src/world/coords';
@@ -126,6 +127,24 @@ describe('planLayout parcels', () => {
         }
       }
     }
+  });
+});
+
+describe('planLayout districts', () => {
+  it('assigns every block a district, and gives park blocks no parcels', () => {
+    const layout = layoutFor('district-assignment');
+    for (const block of layout.blocks) {
+      expect(Object.values(District)).toContain(block.district);
+      if (block.district === District.PARK) {
+        expect(block.parcels).toHaveLength(0);
+      }
+    }
+  });
+
+  it('assigns districts deterministically for the same seed', () => {
+    const a = layoutFor('district-determinism');
+    const b = layoutFor('district-determinism');
+    expect(a.blocks.map((block) => block.district)).toEqual(b.blocks.map((block) => block.district));
   });
 });
 

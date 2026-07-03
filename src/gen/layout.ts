@@ -5,8 +5,11 @@
  * stays trivially testable.
  */
 
+import { District, zoneBlock, type DistrictContext } from './districts';
 import type { Rng } from './rng';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../world/coords';
+
+export type { District } from './districts';
 
 export const GRID_SIZE_X = WORLD_SIZE_X;
 export const GRID_SIZE_Z = WORLD_SIZE_Z;
@@ -52,6 +55,7 @@ export interface Span2D {
 
 export interface CityBlock extends Span2D {
   parcels: Parcel[];
+  district: District;
 }
 
 export interface CityLayout {
@@ -178,6 +182,8 @@ export function planLayout(rng: Rng): CityLayout {
   for (const span of zAxis.roadSpans) fillRoadBand(cells, gridSizeX, gridSizeZ, span, 'z');
 
   const parcelRng = rng.fork('parcels');
+  const districtRng = rng.fork('districts');
+  const districtCtx: DistrictContext = { gridSizeX, gridSizeZ, noiseSeed: districtRng.hashSeed() };
   const blocks: CityBlock[] = [];
   xAxis.blockSpans.forEach((xSpan, blockX) => {
     zAxis.blockSpans.forEach((zSpan, blockZ) => {
@@ -187,8 +193,14 @@ export function planLayout(rng: Rng): CityLayout {
         width: xSpan.end - xSpan.start,
         depth: zSpan.end - zSpan.start,
       };
-      const parcels = planParcels(rect, blockX, blockZ, parcelRng.fork(`${blockX},${blockZ}`));
-      blocks.push({ ...rect, parcels });
+      const centerX = rect.x + rect.width / 2;
+      const centerZ = rect.z + rect.depth / 2;
+      const district = zoneBlock(centerX, centerZ, districtCtx, districtRng.fork(`${blockX},${blockZ}`));
+      // Park blocks are rasterized whole (grass/paths/trees) by parks.ts
+      // instead of subdivided into building parcels.
+      const parcels =
+        district === District.PARK ? [] : planParcels(rect, blockX, blockZ, parcelRng.fork(`${blockX},${blockZ}`));
+      blocks.push({ ...rect, parcels, district });
     });
   });
 

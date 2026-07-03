@@ -36,6 +36,7 @@ export const PARK_GRASS = 11;
 export const TREE_LEAF = 12;
 export const TREE_TRUNK = 13;
 export const ELEVATOR_SHAFT = 14;
+export const GRAVEL = 15;
 
 const BLOCK_LIST: BlockDef[] = [
   { id: AIR, name: 'AIR', color: rgb(0, 0, 0), solid: false, opaque: false, emissive: false },
@@ -152,6 +153,14 @@ const BLOCK_LIST: BlockDef[] = [
     id: ELEVATOR_SHAFT,
     name: 'ELEVATOR_SHAFT',
     color: rgb(90, 100, 110),
+    solid: true,
+    opaque: true,
+    emissive: false,
+  },
+  {
+    id: GRAVEL,
+    name: 'GRAVEL',
+    color: rgb(150, 140, 120),
     solid: true,
     opaque: true,
     emissive: false,
