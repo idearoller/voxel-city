@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildChunkMeshData } from '../src/engine/ChunkMesher';
-import { CONCRETE, NEON_CYAN, NEON_PINK, WINDOW_LIT } from '../src/world/BlockRegistry';
+import { ASPHALT, CONCRETE, NEON_CYAN, NEON_PINK, WINDOW_LIT } from '../src/world/BlockRegistry';
 import { World } from '../src/world/World';
 
 const ORIGIN_CHUNK = { cx: 0, cy: 0, cz: 0 };
@@ -81,6 +81,26 @@ describe('buildChunkMeshData face culling', () => {
     // Only NEON_PINK's faces should land in channel 0 -- WINDOW_LIT must not mix in.
     expect(faceCount(data.neon[0])).toBe(6);
     expect(vertexCount(data.solid)).toBe(0);
+  });
+
+  it('routes ASPHALT into the road group, not solid, and gives adjacent road voxels distinct color variation', () => {
+    const world = new World();
+    world.setBlock(2, 2, 2, ASPHALT);
+    world.setBlock(4, 2, 2, ASPHALT);
+
+    const data = buildChunkMeshData(world, ORIGIN_CHUNK);
+
+    expect(vertexCount(data.solid)).toBe(0);
+    expect(faceCount(data.road)).toBe(12); // 6 faces each, both isolated
+
+    // Wet-mottled variation: two different world positions should not get
+    // the exact same darkening tint (top-face red channel is a stand-in for
+    // "the baked color", since AO/shade are identical for both isolated
+    // voxels' top faces).
+    const topFaceFirstVertex = 2 * 6;
+    const firstVoxelRed = data.road.colors[topFaceFirstVertex * 3];
+    const secondVoxelRed = data.road.colors[(6 * 6 + topFaceFirstVertex) * 3];
+    expect(firstVoxelRed).not.toBe(secondVoxelRed);
   });
 
   it('culls the shared face across a chunk border (voxels at local x=31 and x=32)', () => {

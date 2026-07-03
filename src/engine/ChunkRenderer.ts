@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { meshChunk } from './ChunkMesher';
-import { neonMaterials, solidMaterial, windowLitMaterial } from './Materials';
+import { neonMaterials, roadMaterial, solidMaterial, windowLitMaterial } from './Materials';
 import { parseChunkKey } from '../world/coords';
 import type { World } from '../world/World';
 
@@ -8,6 +8,7 @@ const REBUILD_BUDGET_PER_FRAME = 4;
 
 interface ChunkMeshes {
   solid: THREE.Mesh | null;
+  road: THREE.Mesh | null;
   windowLit: THREE.Mesh | null;
   neon: (THREE.Mesh | null)[];
 }
@@ -71,6 +72,9 @@ export class ChunkRenderer {
     const solidMesh = geometries.solid ? new THREE.Mesh(geometries.solid, solidMaterial) : null;
     if (solidMesh) this.scene.add(solidMesh);
 
+    const roadMesh = geometries.road ? new THREE.Mesh(geometries.road, roadMaterial) : null;
+    if (roadMesh) this.scene.add(roadMesh);
+
     const windowLitMesh = geometries.windowLit
       ? new THREE.Mesh(geometries.windowLit, windowLitMaterial)
       : null;
@@ -84,8 +88,8 @@ export class ChunkRenderer {
       return mesh;
     });
 
-    if (solidMesh || windowLitMesh || neonMeshes.some((m) => m !== null)) {
-      this.meshes.set(key, { solid: solidMesh, windowLit: windowLitMesh, neon: neonMeshes });
+    if (solidMesh || roadMesh || windowLitMesh || neonMeshes.some((m) => m !== null)) {
+      this.meshes.set(key, { solid: solidMesh, road: roadMesh, windowLit: windowLitMesh, neon: neonMeshes });
     }
   }
 
@@ -96,6 +100,10 @@ export class ChunkRenderer {
     if (existing.solid) {
       this.scene.remove(existing.solid);
       existing.solid.geometry.dispose();
+    }
+    if (existing.road) {
+      this.scene.remove(existing.road);
+      existing.road.geometry.dispose();
     }
     if (existing.windowLit) {
       this.scene.remove(existing.windowLit);

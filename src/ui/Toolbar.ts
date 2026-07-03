@@ -9,11 +9,16 @@ function randomSeed(): string {
 }
 
 export type GenerateRequestListener = (seed: string) => void;
+export type ToggleListener = () => void;
 
 export class Toolbar {
   private readonly root: HTMLElement;
   private readonly seedInput: HTMLInputElement;
+  private readonly pauseButton: HTMLButtonElement;
+  private readonly rainButton: HTMLButtonElement;
   private readonly listeners: GenerateRequestListener[] = [];
+  private readonly pauseListeners: ToggleListener[] = [];
+  private readonly rainListeners: ToggleListener[] = [];
 
   constructor(container: HTMLElement, initialSeed: string) {
     this.root = document.createElement('div');
@@ -50,11 +55,50 @@ export class Toolbar {
       if (event.key === 'Enter') this.requestGenerate(this.seedInput.value);
     });
 
+    this.pauseButton = document.createElement('button');
+    this.pauseButton.type = 'button';
+    this.pauseButton.className = 'toolbar-button';
+    this.pauseButton.textContent = '⏸ CYCLE'; // pause symbol, default running
+    this.pauseButton.title = 'Pause/resume day-night cycle';
+    this.pauseButton.addEventListener('click', () => {
+      for (const listener of this.pauseListeners) listener();
+    });
+    this.root.appendChild(this.pauseButton);
+
+    this.rainButton = document.createElement('button');
+    this.rainButton.type = 'button';
+    this.rainButton.className = 'toolbar-button';
+    this.rainButton.textContent = '☔ RAIN'; // umbrella, default on
+    this.rainButton.title = 'Toggle rain';
+    this.rainButton.addEventListener('click', () => {
+      for (const listener of this.rainListeners) listener();
+    });
+    this.root.appendChild(this.rainButton);
+
     container.appendChild(this.root);
   }
 
   onGenerateRequest(listener: GenerateRequestListener): void {
     this.listeners.push(listener);
+  }
+
+  onTogglePause(listener: ToggleListener): void {
+    this.pauseListeners.push(listener);
+  }
+
+  onToggleRain(listener: ToggleListener): void {
+    this.rainListeners.push(listener);
+  }
+
+  /** Reflects current day/night-cycle pause state onto the toggle button. */
+  setPaused(paused: boolean): void {
+    this.pauseButton.textContent = paused ? '▶ CYCLE' : '⏸ CYCLE';
+    this.pauseButton.classList.toggle('toolbar-button-active', paused);
+  }
+
+  /** Reflects current rain-enabled state onto the toggle button. */
+  setRainEnabled(enabled: boolean): void {
+    this.rainButton.classList.toggle('toolbar-button-active', !enabled);
   }
 
   private requestGenerate(rawSeed: string): void {

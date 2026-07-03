@@ -11,6 +11,17 @@ export interface EngineCallbacks {
 }
 
 /**
+ * Structural port for a post-processing chain (implemented by `PostFX`).
+ * Kept as an interface, not a direct `PostFX`/`EffectComposer` dependency,
+ * so `Engine` stays free of postprocessing-specific imports; it only needs
+ * something it can resize and ask to render.
+ */
+export interface Composer {
+  resize: (width: number, height: number) => void;
+  render: () => void;
+}
+
+/**
  * Owns the renderer, scene, camera, resize handling, and the fixed-timestep
  * RAF loop. Simulation (`update`) runs at a fixed 60Hz cadence via an
  * accumulator; rendering (`render`) runs every animation frame with an
@@ -23,6 +34,7 @@ export class Engine {
   readonly canvas: HTMLCanvasElement;
 
   private callbacks: EngineCallbacks | null = null;
+  private composer: Composer | null = null;
   private accumulator = 0;
   private lastTime = 0;
   private rafHandle = 0;
@@ -58,6 +70,12 @@ export class Engine {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, true);
+    this.composer?.resize(width, height);
+  }
+
+  /** Routes final-frame rendering through a post-processing chain (e.g. `PostFX`) instead of a bare `renderer.render()`. */
+  setComposer(composer: Composer): void {
+    this.composer = composer;
   }
 
   start(callbacks: EngineCallbacks): void {
@@ -86,6 +104,11 @@ export class Engine {
 
     const alpha = this.accumulator / FIXED_TIMESTEP;
     this.callbacks.render(alpha);
-    this.renderer.render(this.scene, this.camera);
+
+    if (this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   };
 }

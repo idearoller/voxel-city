@@ -141,6 +141,12 @@
   font-size: 14px;
 }
 
+.toolbar-button-active {
+  color: var(--neon-pink);
+  border-color: var(--neon-pink);
+  box-shadow: 0 0 8px rgba(255, 45, 149, 0.5);
+}
+
 .gen-overlay {
   position: fixed;
   inset: 0;

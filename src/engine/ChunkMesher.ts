@@ -86,6 +86,27 @@ const FACES: readonly FaceSpec[] = [
 
 const AO_SHADE: readonly [number, number, number, number] = [0.45, 0.6, 0.8, 1.0];
 
+/** Wet-mottled puddle look for road voxels: darkens each voxel's base color by a small, deterministic per-position amount. */
+const ROAD_TINT_MIN = 0.82;
+const ROAD_TINT_MAX = 1.0;
+
+/**
+ * Deterministic 0..1 hash of a voxel's world position (no Math.random, so
+ * meshing stays pure and reproducible). Same mixing strategy as
+ * `neon.ts`'s `hash01`, just seeded from 3 coordinates instead of 1.
+ */
+function hash01(x: number, y: number, z: number): number {
+  let h = (x * 374761393 + y * 668265263 + z * 2147483647) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 0xffffffff;
+}
+
+/** Per-voxel darkening multiplier for road surfaces, giving a wet-mottled puddle variation. */
+function roadTintFactor(x: number, y: number, z: number): number {
+  return ROAD_TINT_MIN + hash01(x, y, z) * (ROAD_TINT_MAX - ROAD_TINT_MIN);
+}
+
 const AXIS_UNIT: readonly [Vec3, Vec3, Vec3] = [
   [1, 0, 0],
   [0, 1, 0],
@@ -157,6 +178,9 @@ function emptyGroup(): MeshGroup {
 
 export interface ChunkMeshData {
   solid: MeshGroup;
+  /** Road-surface blocks (ASPHALT), routed to their own group so they can carry the
+   * wet-look envMap PBR material (see `EnvironmentProbe`) without affecting other solids. */
+  road: MeshGroup;
   /** Steady (non-flicker-animated) emissive blocks, e.g. WINDOW_LIT — kept separate from the
    * neon channels so M5 per-channel flicker/pulse animation never touches lit windows. */
   windowLit: MeshGroup;
@@ -167,15 +191,17 @@ export interface ChunkMeshData {
  * Routes a block's faces into the correct output group: neon-channel blocks
  * go to their own channel (animated per-frame in M5), other emissive blocks
  * (e.g. WINDOW_LIT) go to the steady windowLit group so they never get
- * swept up in neon flicker/pulse animation, and everything else is solid.
+ * swept up in neon flicker/pulse animation, road blocks go to the road
+ * group (wet-look PBR material), and everything else is solid.
  */
 function groupFor(
   def: ReturnType<typeof getBlock>,
   solid: MeshGroup,
+  road: MeshGroup,
   windowLit: MeshGroup,
   neon: [MeshGroup, MeshGroup, MeshGroup, MeshGroup],
 ): MeshGroup {
-  if (!def.emissive) return solid;
+  if (!def.emissive) return def.road ? road : solid;
   if (def.neonChannel !== undefined) return neon[def.neonChannel as NeonChannel];
   return windowLit;
 }
@@ -203,6 +229,7 @@ function pushVertex(
  */
 export function buildChunkMeshData(world: World, chunk: ChunkCoord): ChunkMeshData {
   const solid = emptyGroup();
+  const road = emptyGroup();
   const windowLit = emptyGroup();
   const neon: [MeshGroup, MeshGroup, MeshGroup, MeshGroup] = [
     emptyGroup(),
@@ -219,7 +246,8 @@ export function buildChunkMeshData(world: World, chunk: ChunkCoord): ChunkMeshDa
         if (blockId === 0) continue;
         const def = getBlock(blockId);
 
-        const group: MeshGroup = groupFor(def, solid, windowLit, neon);
+        const group: MeshGroup = groupFor(def, solid, road, windowLit, neon);
+        const tint = def.road ? roadTintFactor(x, y, z) : 1;
         const [r, g, b] = def.color;
 
         for (const face of FACES) {
@@ -245,7 +273,7 @@ export function buildChunkMeshData(world: World, chunk: ChunkCoord): ChunkMeshDa
           };
 
           const emit = (i: number): void => {
-            const shade = shadeAt(i);
+            const shade = shadeAt(i) * tint;
             const pos = positions[i] as number[];
             pushVertex(group, pos[0] as number, pos[1] as number, pos[2] as number, face.normal, r * shade, g * shade, b * shade);
           };
@@ -262,7 +290,7 @@ export function buildChunkMeshData(world: World, chunk: ChunkCoord): ChunkMeshDa
     }
   }
 
-  return { solid, windowLit, neon };
+  return { solid, road, windowLit, neon };
 }
 
 function groupToGeometry(group: MeshGroup): THREE.BufferGeometry | null {
@@ -276,6 +304,7 @@ function groupToGeometry(group: MeshGroup): THREE.BufferGeometry | null {
 
 export interface ChunkGeometries {
   solid: THREE.BufferGeometry | null;
+  road: THREE.BufferGeometry | null;
   windowLit: THREE.BufferGeometry | null;
   neon: [
     THREE.BufferGeometry | null,
@@ -290,6 +319,7 @@ export function meshChunk(world: World, chunk: ChunkCoord): ChunkGeometries {
   const data = buildChunkMeshData(world, chunk);
   return {
     solid: groupToGeometry(data.solid),
+    road: groupToGeometry(data.road),
     windowLit: groupToGeometry(data.windowLit),
     neon: [
       groupToGeometry(data.neon[0]),

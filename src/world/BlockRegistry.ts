@@ -13,6 +13,8 @@ export interface BlockDef {
   opaque: boolean;
   emissive: boolean;
   neonChannel?: NeonChannel;
+  /** Routed into the mesher's dedicated road group (wet-look PBR material) instead of solid. */
+  road?: boolean;
 }
 
 function rgb(r: number, g: number, b: number): [number, number, number] {
@@ -52,6 +54,7 @@ const BLOCK_LIST: BlockDef[] = [
     solid: true,
     opaque: true,
     emissive: false,
+    road: true,
   },
   {
     id: SIDEWALK,
