@@ -37,6 +37,8 @@ export const TREE_LEAF = 12;
 export const TREE_TRUNK = 13;
 export const ELEVATOR_SHAFT = 14;
 export const GRAVEL = 15;
+export const SHOP_COUNTER = 16;
+export const SHOP_SHELF = 17;
 
 const BLOCK_LIST: BlockDef[] = [
   { id: AIR, name: 'AIR', color: rgb(0, 0, 0), solid: false, opaque: false, emissive: false },
@@ -161,6 +163,22 @@ const BLOCK_LIST: BlockDef[] = [
     id: GRAVEL,
     name: 'GRAVEL',
     color: rgb(150, 140, 120),
+    solid: true,
+    opaque: true,
+    emissive: false,
+  },
+  {
+    id: SHOP_COUNTER,
+    name: 'SHOP_COUNTER',
+    color: rgb(120, 84, 56),
+    solid: true,
+    opaque: true,
+    emissive: false,
+  },
+  {
+    id: SHOP_SHELF,
+    name: 'SHOP_SHELF',
+    color: rgb(104, 108, 118),
     solid: true,
     opaque: true,
     emissive: false,

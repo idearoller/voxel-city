@@ -29,6 +29,7 @@ import {
   WINDOW_LIT,
 } from '../world/BlockRegistry';
 import type { World } from '../world/World';
+import { planShopInterior, writeShopInterior, type ShopInteriorPlan } from './shopInterior';
 
 export const MIN_BUILDING_HEIGHT = 8;
 export const MAX_BUILDING_HEIGHT = 120;
@@ -140,6 +141,8 @@ export interface BuildingPlan {
   signStrip: SignStrip | null;
   roofTrimColor: number | null;
   antenna: AntennaMast | null;
+  /** Walkable ground-floor room behind the doorway, or null (non-commercial, no door, or footprint too small). */
+  shopInterior: ShopInteriorPlan | null;
   /**
    * The same forked Rng used to plan this building, reused by `writeBuilding`
    * for the per-window lit/dark draws so the whole building stays derived
@@ -338,6 +341,7 @@ export function planBuilding(
   const signStrip = planSignStrip(rng, district, tier0, height);
   const roofTrimColor = district === District.DOWNTOWN ? rng.pick(SIGN_COLORS) : null;
   const antenna = planAntenna(rng, district, height);
+  const shopInterior = planShopInterior(rng.fork('shop-interior'), district, doorSide, tier0);
 
   return {
     x,
@@ -358,6 +362,7 @@ export function planBuilding(
     signStrip,
     roofTrimColor,
     antenna,
+    shopInterior,
     rng,
   };
 }
@@ -482,6 +487,13 @@ function writeAntenna(world: World, plan: BuildingPlan): void {
   world.setBlockRaw(centerX, roofY + antenna.height, centerZ, NEON_PINK);
 }
 
+/** Fills in the ground-floor room behind the doorway, if this building planned one (see `shopInterior.ts`). */
+function writeShopInteriorIfPlanned(world: World, plan: BuildingPlan): void {
+  if (!plan.shopInterior) return;
+  const tier0 = plan.tiers[0] as BuildingTier;
+  writeShopInterior(world, plan.baseY, tier0, plan.shopInterior);
+}
+
 /** Extrudes a planned building into the world via setBlockRaw only (no dirty events). */
 export function writeBuilding(world: World, plan: BuildingPlan): void {
   writeShellAndWindows(world, plan);
@@ -492,6 +504,9 @@ export function writeBuilding(world: World, plan: BuildingPlan): void {
   // shop band / sign strip that happens to land on the same wall cells —
   // the door must stay walkable.
   writeDoorway(world, plan);
+  // Interior furnishing runs after the doorway carve so it can never be
+  // re-solidified by it, and only touches cells strictly inside the shell.
+  writeShopInteriorIfPlanned(world, plan);
   writeRoof(world, plan);
   writeAntenna(world, plan);
 }

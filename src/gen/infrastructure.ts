@@ -70,9 +70,19 @@ export interface Bridge {
   towerB: BuildingPlan;
 }
 
+/**
+ * Buildings with a planned shop interior are excluded: a bridge's internal
+ * stair shaft is centered on the tower's footprint (see `stairShaftOrigin`),
+ * which can overlap a shop's doorway-adjacent walkway ring exactly the same
+ * way an elevator shaft can (see `planElevatorShafts`'s doc comment).
+ */
 function candidateTowers(buildings: readonly BuildingPlan[]): BuildingPlan[] {
   return buildings.filter(
-    (b) => b.height >= BRIDGE_MIN_TOWER_HEIGHT && b.width >= BRIDGE_MIN_TOWER_FOOTPRINT && b.depth >= BRIDGE_MIN_TOWER_FOOTPRINT,
+    (b) =>
+      b.height >= BRIDGE_MIN_TOWER_HEIGHT &&
+      b.width >= BRIDGE_MIN_TOWER_FOOTPRINT &&
+      b.depth >= BRIDGE_MIN_TOWER_FOOTPRINT &&
+      !b.shopInterior,
   );
 }
 
@@ -691,7 +701,12 @@ export interface ElevatorShaftMarker {
 
 /**
  * Rolls an empty 3x3-walled shaft for some tall towers. Skips towers that
- * already got a real stair shaft so the two never overlap.
+ * already got a real stair shaft so the two never overlap, and skips any
+ * building with a planned shop interior (see `shopInterior.ts`) — the
+ * shaft's fixed NW-corner footprint can land squarely on that room's
+ * doorway-adjacent walkway ring, sealing it off, and a shop's whole ground
+ * floor is meant to be one open retail room rather than sharing it with a
+ * vertical core.
  */
 export function planElevatorShafts(
   buildings: readonly BuildingPlan[],
@@ -702,6 +717,7 @@ export function planElevatorShafts(
 
   for (const building of buildings) {
     if (building.height < ELEVATOR_MIN_HEIGHT) continue;
+    if (building.shopInterior) continue;
     const key = towerKey(building);
     if (stairShaftTowerKeys.has(key)) continue;
 

@@ -95,6 +95,7 @@ function tower(overrides: Partial<BuildingPlan> = {}): BuildingPlan {
     signStrip: null,
     roofTrimColor: null,
     antenna: null,
+    shopInterior: null,
     rng: createRng('fixture'),
     ...overrides,
   };
