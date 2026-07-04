@@ -1,16 +1,40 @@
 # VoxelCity
 
 A browser-only 3D voxel cyberpunk city. Procedurally generated road grid,
-districts, buildings, sky bridges, and street furniture — walk it in
-first-person or fly through it and edit voxels by hand. No server: it's a
-static site, and a whole city fits in a `.vxc` file you can save and reload.
+districts, buildings, sky bridges, walkways, shop interiors, and street
+furniture — walk it in first-person or fly through it and edit voxels by
+hand. No server: it's a static site, and a whole city fits in a `.vxc` file
+you can save and reload.
 
 Everything renders client-side with [Three.js](https://threejs.org/); there
 is no backend and no network calls once the page loads.
 
+**Live**: https://idearoller.github.io/voxel-city/
+
+## Features
+
+- **Procedural city generation**: deterministic, seeded — road grid,
+  districts, towers, shops, parks, multi-level sky bridges, and walkways,
+  all derived from a single seed string (see
+  [Deterministic seeds](#deterministic-seeds)).
+- **Play mode**: first-person walking with gravity, AABB-vs-voxel collision,
+  single-voxel auto-step (climb stairs without jumping), and functional
+  elevators.
+- **Sandbox mode**: free-fly camera with no collision, for building and
+  editing voxels anywhere in the world.
+- **NPCs and traffic**: pedestrians on sidewalks, park paths, and elevated
+  walkway/skybridge decks (taking stairs between street level and deck
+  level); ground vehicles with lane-following traffic flow; flying
+  hover-car traffic in dedicated sky lanes above major avenues.
+- **Atmosphere**: bloom post-processing, distance fog, rain, a day-night
+  cycle, wet-street reflections, animated neon materials, and scrolling
+  procedurally-generated billboard ads.
+- **Export/import**: save or load an entire city as a compact `.vxc` binary
+  file (see [`.vxc` file format](#vxc-file-format)).
+
 ## Controls
 
-| | Sandbox mode (fly + edit) | Play mode (walk) |
+| Action | Sandbox mode (fly + edit) | Play mode (walk) |
 |---|---|---|
 | Move | WASD | WASD |
 | Vertical / jump | Space up, Shift down | Space to jump |
@@ -19,6 +43,7 @@ is no backend and no network calls once the page loads.
 | Remove voxel | Left click | Left click |
 | Place voxel | Right click | Right click |
 | Select block | Number keys 1-9/0, or mouse wheel | same |
+| Elevator up / down | — | E / Q (while standing in a shaft) |
 | Switch mode | Tab | Tab |
 
 Play mode adds gravity, collision, and single-voxel auto-stepping (like
@@ -37,7 +62,7 @@ Press **F3** to toggle a small FPS readout (dev builds only).
 npm install
 npm run dev       # local dev server with HMR
 npm run build     # tsc --noEmit + production build to dist/
-npm run test      # vitest run (unit tests, node environment, no browser)
+npm run test      # vitest run (unit/integration tests, node environment, no browser)
 npm run preview   # serve the production build locally
 ```
 
@@ -45,49 +70,57 @@ There is no separate lint step; `tsc --noEmit` runs in strict mode
 (`noUnusedLocals`, `noUncheckedIndexedAccess`, etc.) as part of `build` and
 is the source of truth for type/dead-code hygiene.
 
+## Deployment
+
+Every push to `main` (and manual `workflow_dispatch`) runs
+`.github/workflows/deploy.yml`: `npm ci`, `npm test`, `npm run build`, then
+publishes `dist/` to GitHub Pages via `actions/deploy-pages`. No manual
+deploy step.
+
 ## Architecture
 
 ```
 src/
-  world/    Pure voxel data: BlockRegistry, Chunk (32^3 Uint8Array), World
-            (sparse chunk map + bounds-aware get/set), coords math.
-            No Three.js dependency — unit-testable in isolation.
-  gen/      Procedural generation: deterministic seeded RNG (mulberry32 +
-            fork()), 2D city-planning (roads/blocks/parcels/districts),
-            building/bridge/walkway/park writers. Pure 2D/3D math that
-            writes into World via setBlockRaw, no Three.js.
-  engine/   Three.js glue: Engine (renderer/scene/camera/fixed-timestep
-            loop), ChunkRenderer + ChunkMesher (greedy-ish per-chunk mesh
-            rebuild, budgeted per frame), Materials, Atmosphere (sky/fog/
-            day-night), PostFX (bloom), EnvironmentProbe (wet-street
-            reflections), Rain, neon animation.
-  player/   Sandbox fly controller, first-person walk controller with
-            AABB-vs-voxel collision + auto-step, mode switching, look
-            controls, voxel raycasting.
-  io/       Serializer.ts — the `.vxc` binary export/import format. Pure
-            data in/out (ArrayBuffer <-> World), no DOM/Three.js.
-  ui/       Plain DOM overlays: Toolbar, Hud, Palette, ErrorToast,
-            FpsCounter. No game-logic knowledge; main.ts wires them to the
-            engine/world.
-  main.ts   Composition root: wires world/engine/gen/player/io/ui together,
-            owns the generation and import lifecycles.
+  world/      Pure voxel data: BlockRegistry, Chunk (32^3 Uint8Array), World
+              (sparse chunk map + bounds-aware get/set), coords math.
+              No Three.js dependency — unit-testable in isolation.
+  gen/        Procedural generation: deterministic seeded RNG (mulberry32 +
+              fork()), 2D city-planning (roads/blocks/parcels/districts),
+              building/bridge/walkway/park/shop-interior writers. Pure
+              2D/3D math that writes into World, no Three.js.
+  engine/     Three.js glue: Engine (renderer/scene/camera/fixed-timestep
+              loop), ChunkRenderer + worker-pool ChunkMesher (budgeted per
+              frame, sync fallback), Materials, Atmosphere (sky/fog/
+              day-night), PostFX (bloom), EnvironmentProbe (wet-street
+              reflections), Rain, neon animation, billboard atlas/layer.
+  player/     Sandbox fly controller, first-person walk controller with
+              AABB-vs-voxel collision + auto-step, mode switching, look
+              controls, voxel raycasting.
+  entities/   NPC/vehicle simulation: pedestrian pathing (sidewalks, park
+              paths, elevated walkway/skybridge decks with stair
+              transitions), ground-vehicle lane flow, flying hover-car
+              traffic in sky lanes, navigation grid, spawning.
+  elevators/  Elevator-shaft scanning, car simulation, and the E/Q call
+              interaction while a player stands in a shaft.
+  io/         Serializer.ts — the `.vxc` binary export/import format. Pure
+              data in/out (ArrayBuffer <-> World), no DOM/Three.js.
+  ui/         Plain DOM overlays: Toolbar, Hud, Palette, ErrorToast,
+              FpsCounter. No game-logic knowledge; main.ts wires them to the
+              engine/world.
+  main.ts     Composition root: wires world/engine/gen/player/entities/
+              elevators/io/ui together, owns the generation and import
+              lifecycles.
 ```
 
-Key decisions (see the implementation plan for the full rationale):
+See `PERF.md` for the chunk-meshing performance decisions (why there's no
+greedy meshing, and how the worker pool is budgeted).
 
-- **World bounds**: 384 x 384 x 160 voxels, in 32^3 chunks. Sparse: a chunk
-  only exists once something writes to it.
-- **Determinism**: every generator draws from a seeded `Rng` with `fork()`
-  for independent sub-streams, so the same seed always reproduces the same
-  city, and forking one sub-generator's stream never perturbs another's.
-- **Rendering**: one mesh per chunk per material group (solid / road /
-  lit-window / 4 neon channels), rebuilt on a per-frame budget so large
-  edits or a fresh generation don't stall a frame — except right after
-  `generateCity`/import, where every dirty chunk is flushed synchronously
-  behind a loading overlay instead of dribbling in over dozens of frames.
-- **Wet streets**: a one-shot `CubeCamera` -> PMREM environment map on the
-  road material, refreshed after generation/import and (debounced) after
-  edits — not a per-frame reflection technique.
+### Deterministic seeds
+
+Every generator draws from a seeded `Rng` with `fork()` for independent
+sub-streams, so the same seed always reproduces the same city — buildings,
+bridges, shop interiors, NPC/vehicle spawns, billboard ad content — and
+forking one sub-generator's stream never perturbs another's.
 
 ### `.vxc` file format
 
@@ -112,8 +145,7 @@ palette, timeOfDay, entities }`. `palette` (block id -> block name at
 export time) is what makes import resilient to a `BlockRegistry` that's
 been reordered or extended since the file was written — ids are remapped by
 *name* on import, and an unrecognized name falls back to air with a
-warning rather than failing the whole load. `entities` is always `[]` in
-phase 1; it's a forward-compatible slot for NPCs/vehicles state in phase 2.
+warning rather than failing the whole load.
 
 All-air chunks are skipped on export (an imported city starts from an
 all-air world, so there's nothing to write). Bad magic, an unsupported
@@ -121,16 +153,16 @@ format version, or a truncated/corrupt buffer all raise a typed
 `SerializerError` with a clear message instead of crashing; the UI shows it
 in a dismissable on-theme toast rather than `window.alert`.
 
-## Phase 2 roadmap (not implemented)
+## Key world decisions
 
-Phase 1 is the core loop: procgen + sandbox editing + first-person play +
-export/import. The architecture leaves hooks for phase 2 without committing
-to them yet:
-
-- **NPCs / vehicles**: the `.vxc` format's `entities: []` field is reserved
-  for this — adding entity state later shouldn't require a format version
-  bump for existing saves.
-- **Elevators**: `ELEVATOR_SHAFT` blocks and elevator-shaft markers already
-  exist in generation as placeholders; no interaction logic yet.
-- Everything else (multiplayer, persistence beyond local file export,
-  further district/building variety) is deliberately out of scope for now.
+- **World bounds**: 384 x 384 x 160 voxels, in 32^3 chunks. Sparse: a chunk
+  only exists once something writes to it.
+- **Rendering**: one mesh per chunk per material group (solid / road /
+  lit-window / 4 neon channels), rebuilt on a per-frame budget through a
+  worker pool so large edits or a fresh generation don't stall a frame —
+  except right after `generateCity`/import, where every dirty chunk is
+  flushed synchronously behind a loading overlay instead of dribbling in
+  over dozens of frames.
+- **Wet streets**: a one-shot `CubeCamera` -> PMREM environment map on the
+  road material, refreshed after generation/import and (debounced) after
+  edits — not a per-frame reflection technique.
