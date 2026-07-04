@@ -784,16 +784,65 @@ const ELEVATOR_MIN_HEIGHT = 30;
 /** Rows of solid "penthouse" wall above the topmost stop's floor, enough to carve that stop's own 2-voxel doorway into. */
 const ELEVATOR_HOUSING_ROWS = 2;
 
+/**
+ * Minimum tower footprint (both width AND depth) for a stair shaft and an
+ * elevator shaft to coexist on the same tower with at least 1 voxel of
+ * clearance between their two 3x3 footprints, rather than merely touching.
+ *
+ * Geometry: the elevator's footprint is fixed at the tower's NW interior
+ * corner — absolute columns `[tier0.x+1, tier0.x+3]` on the x axis (offsets 0
+ * to 2 from its own origin `tier0.x+1`), and the same shape on z (see
+ * `planElevatorShafts`). The stair shaft is *centered*: its origin is
+ * `tier0.x + floor(width/2) - 1` (see `stairShaftOrigin`), so its footprint is
+ * `[tier0.x + floor(width/2) - 1, tier0.x + floor(width/2) + 1]`.
+ *
+ * Clearance between the two on the x axis = `(floor(width/2) - 1) - 3 - 1`
+ * (the empty columns strictly between the elevator's max column and the
+ * stair's min column) = `floor(width/2) - 5`. The same formula applies to z
+ * via depth. Requiring clearance >= 1 gives `floor(size/2) >= 6`, i.e.
+ * `size >= 12`.
+ *
+ * Below 12 (down to `BRIDGE_MIN_TOWER_FOOTPRINT` = 10, the smallest footprint
+ * a stair shaft can appear on at all), the two footprints are still provably
+ * *disjoint* on the x axis alone — `floor(width/2) - 1 >= 4 > 3` already holds
+ * at width 10 — so they never share a voxel column and an elevator door edge
+ * can never probe into the stair shaft's rectangle (its outward probe's
+ * "along the wall" coordinate never leaves the elevator's own `[1, 3]` range,
+ * which can't simultaneously fall inside the stair rectangle's `[>=4, ...]`
+ * range on both axes). But at width/depth 10 or 11 the two walls sit exactly
+ * face-to-face with zero gap between them, which reads as one shaft's wall
+ * fused to the other's rather than two distinct structures — this module
+ * treats that as too tight to bother routing an elevator through, and keeps
+ * the pre-existing "stairs only" behavior there instead.
+ */
+const ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT = 12;
+
 export interface ElevatorShaftMarker {
   building: BuildingPlan;
   x: number;
   z: number;
+  /**
+   * True when this tower also has a bridge stair shaft (see
+   * `planElevatorShafts`'s coexistence gate). `writeElevatorShaft` uses this
+   * to defensively exclude `stairShaftFootprintColumns` from door-edge
+   * candidates — belt-and-suspenders on top of the geometric proof above,
+   * which already guarantees no real collision at any footprint a stair
+   * shaft can exist on.
+   */
+  coexistsWithStairShaft: boolean;
 }
 
 /**
- * Rolls an empty 3x3-walled shaft for some tall towers. Skips towers that
- * already got a real stair shaft so the two never overlap, and skips any
- * building with a planned shop interior (see `shopInterior.ts`) — unlike a
+ * Rolls an empty 3x3-walled shaft for some tall towers. A tower that already
+ * has a bridge stair shaft (see `planStairShafts`) is only eligible once its
+ * footprint clears `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT` on both axes — see
+ * that constant's doc comment for the geometric proof that the two 3x3
+ * footprints (elevator at the fixed NW corner, stairs centered) never
+ * overlap, and coexist with real clearance above that threshold. Below it,
+ * the tower keeps the pre-existing "stairs only" behavior.
+ *
+ * Independently, skips any building with a planned shop interior (see
+ * `shopInterior.ts`) regardless of stair-shaft coexistence — unlike a
  * bridge's *centered* stair shaft (see `candidateTowers`, which no longer
  * excludes shops for exactly this reason), this shaft's footprint is anchored
  * to the tower's fixed NW interior corner, which can land squarely on that
@@ -812,13 +861,16 @@ export function planElevatorShafts(
     if (building.height < ELEVATOR_MIN_HEIGHT) continue;
     if (building.shopInterior) continue;
     const key = towerKey(building);
-    if (stairShaftTowerKeys.has(key)) continue;
+    const hasStairShaft = stairShaftTowerKeys.has(key);
+    if (hasStairShaft && (building.width < ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT || building.depth < ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT)) {
+      continue;
+    }
 
     const buildingRng = rng.fork(key);
     if (!buildingRng.chance(ELEVATOR_CHANCE)) continue;
 
     const tier0 = building.tiers[0] as NonNullable<(typeof building.tiers)[0]>;
-    markers.push({ building, x: tier0.x + 1, z: tier0.z + 1 });
+    markers.push({ building, x: tier0.x + 1, z: tier0.z + 1, coexistsWithStairShaft: hasStairShaft });
   }
 
   return markers;
@@ -915,11 +967,29 @@ const DOOR_EDGES: readonly DoorEdge[] = [
  * this stop (a degenerately narrow tier): `writeElevatorShaft` then leaves
  * that one stop doorless rather than the whole shaft, which
  * `elevators/ElevatorScanner.ts` simply doesn't count as a stop.
+ *
+ * `forbiddenColumns`, when given, is the coexisting stair shaft's own 3x3
+ * footprint (see `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`'s doc comment): an
+ * edge whose door or outward-probe cell lands there is skipped outright,
+ * before even checking footing/clearance. The geometric proof there already
+ * guarantees this never actually triggers at any footprint a stair shaft can
+ * exist on — this is a cheap defensive check, not load-bearing geometry.
  */
-function pickDoorEdge(world: World, x: number, z: number, doorYs: readonly [number, number]): DoorEdge | null {
+function pickDoorEdge(
+  world: World,
+  x: number,
+  z: number,
+  doorYs: readonly [number, number],
+  forbiddenColumns: ReadonlySet<string> | null,
+): DoorEdge | null {
   const floorY = doorYs[0] - 1;
   for (const edge of DOOR_EDGES) {
+    const [doorDx, doorDz] = edge.doorOffset;
     const [outDx, outDz] = edge.outwardOffset;
+    if (forbiddenColumns) {
+      if (forbiddenColumns.has(`${x + doorDx},${z + doorDz}`)) continue;
+      if (forbiddenColumns.has(`${x + outDx},${z + outDz}`)) continue;
+    }
     const hasFooting = world.isSolid(x + outDx, floorY, z + outDz);
     const isClearAtBothRows = doorYs.every((y) => !world.isSolid(x + outDx, y, z + outDz));
     if (hasFooting && isClearAtBothRows) return edge;
@@ -969,9 +1039,17 @@ export function writeElevatorShaft(world: World, marker: ElevatorShaftMarker): v
     world.setBlockRaw(x + 1, y, z + 1, AIR); // well stays hollow through the whole tube, regardless of what any tier's own walls would otherwise put there here
   }
 
+  // See `pickDoorEdge`'s doc comment: this is a defensive belt-and-suspenders
+  // exclusion, not load-bearing geometry — coexistence is only ever granted
+  // (see `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`) with real clearance between
+  // the two footprints.
+  const forbiddenColumns: ReadonlySet<string> | null = marker.coexistsWithStairShaft
+    ? new Set(stairShaftFootprintColumns(building).map((c) => `${c.x},${c.z}`))
+    : null;
+
   for (const deckY of deckYs) {
     const doorYs: readonly [number, number] = [deckY + 1, deckY + 2];
-    const edge = pickDoorEdge(world, x, z, doorYs);
+    const edge = pickDoorEdge(world, x, z, doorYs, forbiddenColumns);
     if (!edge) continue; // no wall open at this specific stop (a degenerately narrow tier) -> leave just this stop sealed
 
     const [doorDx, doorDz] = edge.doorOffset;

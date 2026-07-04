@@ -11,6 +11,7 @@ import {
   planStairSteps,
   planStreetlights,
   planWalkways,
+  stairShaftFootprintColumns,
   towerKey,
   writeBillboard,
   writeBridge,
@@ -519,12 +520,37 @@ describe('planBillboards / writeBillboard', () => {
 });
 
 describe('planElevatorShafts / writeElevatorShaft', () => {
-  it('never marks a tower that already got a real stair shaft', () => {
+  it('never marks a tower that already got a real stair shaft, below the coexistence footprint threshold (width/depth 10 < 12)', () => {
     const withStairs = tower({ x: 0, z: 0, height: 60 });
     const stairKeys = new Set([towerKey(withStairs)]);
     for (let i = 0; i < 30; i++) {
       const markers = planElevatorShafts([withStairs], createRng(`elevator-skip-${i}`), stairKeys);
       expect(markers).toHaveLength(0);
+    }
+  });
+
+  it('allows an elevator to coexist with a real stair shaft once the footprint clears the coexistence threshold (12x12)', () => {
+    const withStairs = tower({ x: 0, z: 0, width: 12, depth: 12, height: 60 });
+    const stairKeys = new Set([towerKey(withStairs)]);
+    let found = false;
+    for (let i = 0; i < 30 && !found; i++) {
+      const markers = planElevatorShafts([withStairs], createRng(`elevator-coexist-${i}`), stairKeys);
+      if (markers.length === 0) continue;
+      found = true;
+      expect(markers[0]!.coexistsWithStairShaft).toBe(true);
+    }
+    expect(found).toBe(true);
+  });
+
+  it("still excludes a stair-shaft tower one voxel short of the coexistence threshold on either axis (11 wide, or 11 deep)", () => {
+    const stairKeysForKey = (t: BuildingPlan) => new Set([towerKey(t)]);
+    const narrowWidth = tower({ x: 0, z: 0, width: 11, depth: 12, height: 60 });
+    const narrowDepth = tower({ x: 0, z: 0, width: 12, depth: 11, height: 60 });
+    for (const t of [narrowWidth, narrowDepth]) {
+      for (let i = 0; i < 30; i++) {
+        const markers = planElevatorShafts([t], createRng(`elevator-near-threshold-${i}`), stairKeysForKey(t));
+        expect(markers).toHaveLength(0);
+      }
     }
   });
 
@@ -547,6 +573,75 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
       const markers = planElevatorShafts([withShop], createRng(`elevator-shop-skip-${i}`), new Set());
       expect(markers).toHaveLength(0);
     }
+  });
+
+  it('never shares a column between the centered stair-shaft footprint and the NW-corner elevator footprint, at the coexistence threshold and above', () => {
+    // 12 is the minimum coexisting footprint (see
+    // `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`'s doc comment); 20 is a
+    // representative larger tower. Both must show zero shared columns and
+    // (per the same doc comment) at least 1 voxel of clearance.
+    for (const size of [12, 13, 20]) {
+      const t = tower({ x: 0, z: 0, width: size, depth: size, height: 60 });
+      const stairColumns = new Set(stairShaftFootprintColumns(t).map((c) => `${c.x},${c.z}`));
+      const elevatorColumns: Array<{ x: number; z: number }> = [];
+      for (let dx = 0; dx < 3; dx++) {
+        for (let dz = 0; dz < 3; dz++) elevatorColumns.push({ x: t.x + 1 + dx, z: t.z + 1 + dz });
+      }
+
+      for (const c of elevatorColumns) {
+        expect(stairColumns.has(`${c.x},${c.z}`), `size ${size}: (${c.x},${c.z})`).toBe(false);
+      }
+
+      // Clearance: the nearest stair column must be at least 2 voxels away
+      // (Chebyshev) from the nearest elevator column, i.e. at least 1 empty
+      // voxel of margin between the two 3x3 footprints.
+      let minChebyshev = Infinity;
+      for (const e of elevatorColumns) {
+        for (const s of stairShaftFootprintColumns(t)) {
+          minChebyshev = Math.min(minChebyshev, Math.max(Math.abs(e.x - s.x), Math.abs(e.z - s.z)));
+        }
+      }
+      expect(minChebyshev, `size ${size}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("never opens an elevator door into a forbidden (stair-shaft) column when coexisting — picks the next candidate edge instead", () => {
+    // Synthetic geometry: a real bridge tower can never get a stair shaft
+    // below `BRIDGE_MIN_TOWER_FOOTPRINT` (10), so this exact tiny 4x8
+    // footprint never occurs in the real pipeline (the geometric proof in
+    // `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`'s doc comment shows the two
+    // footprints can never even touch a probe cell at any real footprint).
+    // It's built here purely to force the normally-preferred south door
+    // edge's cells inside `stairShaftFootprintColumns`' rectangle, isolating
+    // the defensive skip in `pickDoorEdge` from the geometry that (correctly)
+    // never exercises it on real output.
+    const t = tower({
+      x: 0,
+      z: 0,
+      width: 4,
+      depth: 8,
+      height: 40,
+      tiers: [{ yStart: 0, yEnd: 40, x: 0, z: 0, width: 4, depth: 8 }],
+    });
+    const world = new World();
+    for (let x = -3; x < 8; x++) {
+      for (let z = -3; z < 12; z++) {
+        world.setBlockRaw(x, t.baseY - 1, z, CONCRETE); // footing everywhere a door edge might open
+      }
+    }
+    writeBuilding(world, t);
+
+    // Sanity: this synthetic tier0 really does put the stair-shaft footprint
+    // where it collides with the south door's cells.
+    const stairColumns = new Set(stairShaftFootprintColumns(t).map((c) => `${c.x},${c.z}`));
+    expect(stairColumns.has('2,3')).toBe(true); // south door cell (origin (1,1) + doorOffset (1,2))
+
+    writeElevatorShaft(world, { building: t, x: 1, z: 1, coexistsWithStairShaft: true });
+
+    // South door stays sealed — its column sits inside the forbidden stair footprint.
+    expect(world.getBlock(2, t.baseY, 3)).toBe(ELEVATOR_SHAFT);
+    // East door opens instead — clear of the stair footprint, with real footing.
+    expect(world.getBlock(3, t.baseY, 2)).toBe(AIR);
   });
 
   it('writes a hollow 3x3 shaft of ELEVATOR_SHAFT wall blocks from ground to roof', () => {

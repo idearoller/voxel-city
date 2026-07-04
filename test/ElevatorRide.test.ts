@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BuildingPlan } from '../src/gen/buildings';
 import { writeBuilding } from '../src/gen/buildings';
 import { District } from '../src/gen/districts';
-import { planElevatorShafts, writeElevatorShaft } from '../src/gen/infrastructure';
+import { planElevatorShafts, writeElevatorShaft, type ElevatorShaftMarker } from '../src/gen/infrastructure';
 import { createRng } from '../src/gen/rng';
 import { scanElevatorShafts, type ElevatorShaft } from '../src/elevators/ElevatorScanner';
 import { ElevatorSimulation } from '../src/elevators/ElevatorSimulation';
@@ -342,7 +342,7 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
       }
       writeBuilding(world, t);
 
-      let marker: { building: BuildingPlan; x: number; z: number } | null = null;
+      let marker: ElevatorShaftMarker | null = null;
       for (let i = 0; i < 30 && !marker; i++) {
         const markers = planElevatorShafts([t], createRng(`setback-stops-${t.x}-${i}`), new Set());
         if (markers.length === 0) continue;

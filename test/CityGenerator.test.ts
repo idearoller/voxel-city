@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BuildingPlan, BuildingTier, DoorSide } from '../src/gen/buildings';
 import { generateCity } from '../src/gen/CityGenerator';
 import { District } from '../src/gen/districts';
-import { planStairShafts, planStairSteps, type Bridge, type Walkway } from '../src/gen/infrastructure';
+import { planStairShafts, planStairSteps, stairShaftFootprintColumns, type Bridge, type Walkway } from '../src/gen/infrastructure';
+import { scanElevatorShafts, type ElevatorShaft } from '../src/elevators/ElevatorScanner';
 import { PLAYER_WIDTH, tryAutoStep, type IsSolidFn } from '../src/player/PlayerCollision';
 import { AIR, ASPHALT, GRAVEL, PARK_GRASS, TREE_TRUNK } from '../src/world/BlockRegistry';
 import { parseChunkKey } from '../src/world/coords';
@@ -617,5 +618,159 @@ describe('generateCity playability: denser bridge network (Task 4 — per-level 
       }
     }
     expect(checkedAnyBridge).toBe(true);
+  });
+});
+
+describe('generateCity playability: elevator + stair coexistence on the same tower', () => {
+  const seeds = Array.from({ length: 15 }, (_, i) => `coexist-${i}`);
+
+  /**
+   * 4-connected flood fill of real standable floor at a fixed feet height,
+   * starting from the elevator well itself (treated as walkable
+   * unconditionally, since it's a platform footprint, not a real floor
+   * voxel) — same shape as `ElevatorRide.test.ts`'s own
+   * `floodFillStandableCount` helper, duplicated locally to avoid reaching
+   * into that module's private scope.
+   */
+  function elevatorFloodFillCount(world: World, wellX: number, wellZ: number, feetY: number, maxCells = 500): number {
+    const visited = new Set<string>([`${wellX},${wellZ}`]);
+    const queue: Array<{ x: number; z: number }> = [{ x: wellX, z: wellZ }];
+    while (queue.length > 0) {
+      const cur = queue.shift() as { x: number; z: number };
+      for (const [dx, dz] of CARDINAL_DIRECTIONS) {
+        const nx = cur.x + dx;
+        const nz = cur.z + dz;
+        const key = `${nx},${nz}`;
+        if (visited.has(key)) continue;
+        if (!isWalkableFeet3D(world, nx, feetY, nz)) continue;
+        visited.add(key);
+        queue.push({ x: nx, z: nz });
+        if (visited.size >= maxCells) return visited.size;
+      }
+    }
+    return visited.size;
+  }
+
+  /** Every tower that anchors at least one bridge (and therefore got a stair shaft) — the same derivation `CityGenerator.ts` itself uses for `stairShaftTowerKeys`. */
+  function stairTowersByKey(bridges: readonly Bridge[]): Map<string, BuildingPlan> {
+    const map = new Map<string, BuildingPlan>();
+    for (const bridge of bridges) {
+      for (const t of [bridge.towerA, bridge.towerB]) map.set(`${t.x},${t.z}`, t);
+    }
+    return map;
+  }
+
+  /** Coexisting towers for one generated city: a stair tower whose footprint also contains a scanned, functional elevator shaft's well. */
+  function coexistingTowers(
+    stairTowers: ReadonlyMap<string, BuildingPlan>,
+    shafts: readonly ElevatorShaft[],
+  ): Array<{ tower: BuildingPlan; shaft: ElevatorShaft }> {
+    const result: Array<{ tower: BuildingPlan; shaft: ElevatorShaft }> = [];
+    for (const shaft of shafts) {
+      for (const tower of stairTowers.values()) {
+        if (
+          shaft.wellX >= tower.x &&
+          shaft.wellX < tower.x + tower.width &&
+          shaft.wellZ >= tower.z &&
+          shaft.wellZ < tower.z + tower.depth
+        ) {
+          result.push({ tower, shaft });
+        }
+      }
+    }
+    return result;
+  }
+
+  it('produces at least one tower with both a stair shaft and a functional elevator, across seeds (non-vacuous)', () => {
+    let total = 0;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+      total += coexistingTowers(stairTowers, shafts).length;
+    }
+    expect(total).toBeGreaterThan(0);
+  });
+
+  it('only ever coexists on towers whose footprint clears the 12x12 minimum, on real generator output across seeds', () => {
+    let checkedAny = false;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+      for (const { tower } of coexistingTowers(stairTowers, shafts)) {
+        checkedAny = true;
+        expect(tower.width).toBeGreaterThanOrEqual(12);
+        expect(tower.depth).toBeGreaterThanOrEqual(12);
+      }
+    }
+    expect(checkedAny).toBe(true);
+  });
+
+  it("never shares a voxel column between a coexisting tower's stair-shaft footprint and its scanned elevator-shaft footprint, across seeds", () => {
+    let checkedAny = false;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+
+      for (const { tower, shaft } of coexistingTowers(stairTowers, shafts)) {
+        checkedAny = true;
+        const stairColumns = new Set(stairShaftFootprintColumns(tower).map((c) => `${c.x},${c.z}`));
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            expect(stairColumns.has(`${shaft.wellX + dx},${shaft.wellZ + dz}`)).toBe(false);
+          }
+        }
+      }
+    }
+    expect(checkedAny).toBe(true);
+  });
+
+  it('elevator scanner still derives at least 2 rideable stops on coexisting towers, and every stop floods to real standable floor (not a sealed pocket), across seeds', () => {
+    let checkedStops = 0;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+
+      for (const { shaft } of coexistingTowers(stairTowers, shafts)) {
+        expect(shaft.stops.length).toBeGreaterThanOrEqual(2);
+        for (const stop of shaft.stops) {
+          checkedStops++;
+          const reach = elevatorFloodFillCount(world, shaft.wellX, shaft.wellZ, stop);
+          expect(reach, `seed ${seed}, well (${shaft.wellX},${shaft.wellZ}), stop ${stop}`).toBeGreaterThan(2);
+        }
+      }
+    }
+    expect(checkedStops).toBeGreaterThan(0);
+  });
+
+  it('climb-BFS still reaches the bridge deck from street level via the stair shaft on coexisting towers specifically, across seeds', () => {
+    let checkedAny = false;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+      const coexistKeys = new Set(coexistingTowers(stairTowers, shafts).map(({ tower }) => `${tower.x},${tower.z}`));
+      if (coexistKeys.size === 0) continue;
+
+      for (const bridge of bridges) {
+        for (const tower of [bridge.towerA, bridge.towerB]) {
+          if (!coexistKeys.has(`${tower.x},${tower.z}`)) continue;
+          checkedAny = true;
+
+          const start = streetEntry(tower);
+          const reached = climbBfsReaches(world, start, (x, y, z) => y === bridge.level + 1 && onBridgeDeck(bridge, x, z), bridgeBounds(bridge));
+          expect(reached, `seed ${seed}, tower (${tower.x},${tower.z}), bridge level ${bridge.level}`).toBe(true);
+        }
+      }
+    }
+    expect(checkedAny).toBe(true);
   });
 });
