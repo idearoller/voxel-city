@@ -4,17 +4,23 @@
  * No Three.js — `EntitySystem` is the only thing that touches a renderer.
  */
 
+import { createFlyingVehicleOnLane, stepFlyingVehicle, type FlyingVehicle } from './FlyingVehicle';
 import { createPedestrianAt, stepPedestrian, type Pedestrian } from './Pedestrian';
 import { isRoadCell, isSidewalkCell, type NavGrid } from './NavGrid';
-import { isBeyondDespawnRadius, pickElevatedSpawnCell, pickSpawnCell } from './Spawner';
+import { isBeyondDespawnRadius, pickElevatedSpawnCell, pickFlyingVehicleSpawn, pickSpawnCell } from './Spawner';
+import type { SkyLane } from './SkyLane';
 import { createVehicleAt, stepVehicle, type Vehicle } from './Vehicle';
 import { createRng, type Rng } from '../gen/rng';
 
 export interface EntitySimulationConfig {
   maxPedestrians: number;
   maxVehicles: number;
+  /** Population cap for flying (hover-car) traffic — kept low (~20-30) so the sky reads as "a few movers," not a swarm. */
+  maxFlyingVehicles: number;
   pedestrianSpeedRange: readonly [number, number];
   vehicleSpeedRange: readonly [number, number];
+  /** Faster than ground traffic — sells the "cutting straight across the city" read a lane-bound hover-car should have. */
+  flyingVehicleSpeedRange: readonly [number, number];
   /** Entities never spawn closer than this to the player — keeps them from popping into view right in front of the camera. */
   spawnMinRadius: number;
   spawnMaxRadius: number;
@@ -24,8 +30,10 @@ export interface EntitySimulationConfig {
 export const DEFAULT_ENTITY_CONFIG: EntitySimulationConfig = {
   maxPedestrians: 120,
   maxVehicles: 40,
+  maxFlyingVehicles: 24,
   pedestrianSpeedRange: [1.0, 1.8],
   vehicleSpeedRange: [6, 10],
+  flyingVehicleSpeedRange: [12, 20],
   spawnMinRadius: 35,
   spawnMaxRadius: 90,
   despawnRadius: 110,
@@ -50,7 +58,9 @@ function swapRemoveDead<T extends { alive: boolean }>(entities: T[]): void {
 export class EntitySimulation {
   private pedestrians: Pedestrian[] = [];
   private vehicles: Vehicle[] = [];
+  private flyingVehicles: FlyingVehicle[] = [];
   private grid: NavGrid | null = null;
+  private skyLanes: readonly SkyLane[] = [];
   private rng: Rng;
 
   constructor(private readonly config: EntitySimulationConfig = DEFAULT_ENTITY_CONFIG) {
@@ -65,11 +75,22 @@ export class EntitySimulation {
     return this.vehicles;
   }
 
-  /** Rebuilds nav data and clears all entities. Call once per city generation/import, before the first `update()`. */
-  reset(grid: NavGrid, seed: string | number = 'entities'): void {
+  get flyingVehicleList(): readonly FlyingVehicle[] {
+    return this.flyingVehicles;
+  }
+
+  /**
+   * Rebuilds nav data and clears all entities. Call once per city
+   * generation/import, before the first `update()`. `skyLanes` defaults to
+   * empty so callers that don't yet have sky lanes on hand (e.g. existing
+   * tests built before flying traffic existed) simply spawn none.
+   */
+  reset(grid: NavGrid, seed: string | number = 'entities', skyLanes: readonly SkyLane[] = []): void {
     this.grid = grid;
+    this.skyLanes = skyLanes;
     this.pedestrians = [];
     this.vehicles = [];
+    this.flyingVehicles = [];
     this.rng = createRng(seed);
   }
 
@@ -79,6 +100,7 @@ export class EntitySimulation {
 
     for (const ped of this.pedestrians) stepPedestrian(ped, dt, grid, this.rng);
     for (const vehicle of this.vehicles) stepVehicle(vehicle, dt, grid);
+    for (const flyer of this.flyingVehicles) stepFlyingVehicle(flyer, dt, grid.width, grid.depth);
 
     for (const ped of this.pedestrians) {
       if (isBeyondDespawnRadius(ped.x, ped.z, playerX, playerZ, this.config.despawnRadius)) ped.alive = false;
@@ -86,11 +108,22 @@ export class EntitySimulation {
     for (const vehicle of this.vehicles) {
       if (isBeyondDespawnRadius(vehicle.x, vehicle.z, playerX, playerZ, this.config.despawnRadius)) vehicle.alive = false;
     }
+    // 2D distance only, same as ground vehicles -- deliberately not widened
+    // for altitude the way `pickElevatedSpawnCell` widens pedestrian spawn
+    // distance (see `EntitySimulationConfig`'s doc comment): a flying
+    // vehicle's fixed altitude (>= 104) is already far enough above the
+    // player's typical ground-level y (<= ~90) that vertical separation
+    // alone hides pop-in, so the horizontal radius doesn't need inflating.
+    for (const flyer of this.flyingVehicles) {
+      if (isBeyondDespawnRadius(flyer.x, flyer.z, playerX, playerZ, this.config.despawnRadius)) flyer.alive = false;
+    }
     swapRemoveDead(this.pedestrians);
     swapRemoveDead(this.vehicles);
+    swapRemoveDead(this.flyingVehicles);
 
     this.trySpawnPedestrian(grid, playerX, playerY, playerZ);
     this.trySpawnVehicle(grid, playerX, playerZ);
+    this.trySpawnFlyingVehicle(playerX, playerZ);
   }
 
   /**
@@ -146,5 +179,20 @@ export class EntitySimulation {
     if (!cell) return;
     const speed = this.rng.float(this.config.vehicleSpeedRange[0], this.config.vehicleSpeedRange[1]);
     this.vehicles.push(createVehicleAt(cell.x, cell.z, speed));
+  }
+
+  private trySpawnFlyingVehicle(playerX: number, playerZ: number): void {
+    if (this.flyingVehicles.length >= this.config.maxFlyingVehicles) return;
+    const spawn = pickFlyingVehicleSpawn(
+      this.skyLanes,
+      playerX,
+      playerZ,
+      this.config.spawnMinRadius,
+      this.config.spawnMaxRadius,
+      this.rng,
+    );
+    if (!spawn) return;
+    const speed = this.rng.float(this.config.flyingVehicleSpeedRange[0], this.config.flyingVehicleSpeedRange[1]);
+    this.flyingVehicles.push(createFlyingVehicleOnLane(spawn.lane, spawn.travelCoord, spawn.direction, speed));
   }
 }

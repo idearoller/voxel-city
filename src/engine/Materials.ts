@@ -83,6 +83,19 @@ export const vehicleGlowMaterial = new THREE.MeshBasicMaterial({
 });
 
 /**
+ * Flying (hover-car) vehicle materials: a darker, more saturated body than
+ * ground traffic (reads as a distinct silhouette against the sky rather than
+ * the street) plus a bright cyan underglow strip — same HDR-boost trick as
+ * `vehicleGlowMaterial`, tuned for a cooler hue so the sky's few moving
+ * lights read as distinct from ground traffic's warm taillights at distance.
+ */
+export const flyingVehicleBodyMaterial = new THREE.MeshLambertMaterial({ color: 0x101018 });
+export const flyingVehicleGlowMaterial = new THREE.MeshBasicMaterial({
+  color: new THREE.Color(0x40e8ff).multiplyScalar(NEON_HDR_BOOST),
+  toneMapped: false,
+});
+
+/**
  * Elevator platform materials (see `engine/ElevatorRenderer.ts`): a plain
  * brushed-metal slab plus a steady cyan edge trim, same HDR-boost trick as
  * the neon channel materials so the trim reads as an always-on indicator

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { isSidewalkCell, type ElevatedLevel, type NavGrid } from '../src/entities/NavGrid';
-import { isBeyondDespawnRadius, pickElevatedSpawnCell, pickSpawnCell } from '../src/entities/Spawner';
+import {
+  isBeyondDespawnRadius,
+  pickElevatedSpawnCell,
+  pickFlyingVehicleSpawn,
+  pickSpawnCell,
+} from '../src/entities/Spawner';
+import type { SkyLane } from '../src/entities/SkyLane';
 import { createRng } from '../src/gen/rng';
 
 function makeGrid(
@@ -208,6 +214,65 @@ describe('pickElevatedSpawnCell', () => {
 
     expect(bigCount + smallCount).toBeGreaterThan(0);
     expect(bigCount).toBeGreaterThan(smallCount); // overwhelmingly weighted toward the bigger deck
+  });
+});
+
+describe('pickFlyingVehicleSpawn', () => {
+  it('returns null when there are no lanes at all', () => {
+    const rng = createRng('flying-no-lanes');
+    expect(pickFlyingVehicleSpawn([], 0, 0, 10, 50, rng)).toBeNull();
+  });
+
+  it('only ever returns a position within [minRadius, maxRadius) of the player', () => {
+    const lanes: SkyLane[] = [
+      { axis: 'x', fixed: 100, altitude: 104, start: 0, end: 400 },
+      { axis: 'z', fixed: 250, altitude: 116, start: 0, end: 400 },
+    ];
+    const rng = createRng('flying-radius');
+    const playerX = 100;
+    const playerZ = 100;
+    const minRadius = 20;
+    const maxRadius = 90;
+
+    for (let i = 0; i < 100; i++) {
+      const result = pickFlyingVehicleSpawn(lanes, playerX, playerZ, minRadius, maxRadius, rng);
+      if (!result) continue;
+      const x = result.lane.axis === 'x' ? result.travelCoord : result.lane.fixed;
+      const z = result.lane.axis === 'z' ? result.travelCoord : result.lane.fixed;
+      const dist = Math.hypot(x - playerX, z - playerZ);
+      expect(dist).toBeGreaterThanOrEqual(minRadius);
+      expect(dist).toBeLessThan(maxRadius);
+    }
+  });
+
+  it('returns null when no lane passes anywhere near the spawn annulus', () => {
+    const lanes: SkyLane[] = [{ axis: 'x', fixed: 5, altitude: 104, start: 0, end: 10 }];
+    const rng = createRng('flying-out-of-range');
+    // Player is far from the only lane's entire short span.
+    expect(pickFlyingVehicleSpawn(lanes, 5000, 5000, 10, 50, rng, 30)).toBeNull();
+  });
+
+  it('produces both directions of travel over many draws', () => {
+    const lanes: SkyLane[] = [{ axis: 'x', fixed: 100, altitude: 104, start: 0, end: 400 }];
+    const rng = createRng('flying-directions');
+    const seen = new Set<number>();
+    for (let i = 0; i < 200; i++) {
+      const result = pickFlyingVehicleSpawn(lanes, 100, 100, 0, 200, rng);
+      if (result) seen.add(result.direction);
+    }
+    expect(seen.has(1)).toBe(true);
+    expect(seen.has(-1)).toBe(true);
+  });
+
+  it('travelCoord always falls within the chosen lane\'s own [start, end) range', () => {
+    const lanes: SkyLane[] = [{ axis: 'z', fixed: 50, altitude: 104, start: 20, end: 60 }];
+    const rng = createRng('flying-travel-range');
+    for (let i = 0; i < 100; i++) {
+      const result = pickFlyingVehicleSpawn(lanes, 50, 40, 0, 100, rng);
+      if (!result) continue;
+      expect(result.travelCoord).toBeGreaterThanOrEqual(20);
+      expect(result.travelCoord).toBeLessThan(60);
+    }
   });
 });
 

@@ -1,9 +1,9 @@
 /**
- * Orchestrates pedestrian/vehicle NPCs: rebuilds navigation data after each
- * city generation/import, steps the pure simulation on the fixed 60Hz tick,
- * and syncs the Three.js instanced-mesh presentation layer once per
- * animation frame — mirroring `ChunkRenderer`'s update()-on-render-frame
- * convention (see `Engine.ts` / `main.ts`).
+ * Orchestrates pedestrian/vehicle/flying-vehicle NPCs: rebuilds navigation
+ * data (and sky lanes) after each city generation/import, steps the pure
+ * simulation on the fixed 60Hz tick, and syncs the Three.js instanced-mesh
+ * presentation layer once per animation frame — mirroring `ChunkRenderer`'s
+ * update()-on-render-frame convention (see `Engine.ts` / `main.ts`).
  *
  * Ephemeral by design: entities are respawned from world state + a seed,
  * never persisted (see `io/Serializer.ts`'s `entities: []` valve). They are
@@ -14,19 +14,21 @@
  * Deliberately out of scope (documented, not silently dropped): elevated
  * pedestrians are deck-bound — they walk their one skybridge/walkway back
  * and forth and never path down to the street or between levels (see
- * `Pedestrian.y`'s doc comment); vehicles stay ground-only, no elevated
- * traffic; vehicles don't yield to pedestrians or each other beyond not
- * spawning on top of one another; despawn and vehicle spawn placement use
- * horizontal (x, z) distance only (`playerY` only feeds elevated-pedestrian
- * spawn distance, see `Spawner.ts`'s `pickElevatedSpawnCell`); no
- * camera-heading bias on spawn angle, so an unlucky roll can in principle
- * spawn just outside the view frustum rather than strictly behind the
- * camera.
+ * `Pedestrian.y`'s doc comment); ground vehicles stay ground-only (flying
+ * vehicles are a wholly separate population — see `FlyingVehicle.ts` and
+ * `SkyLane.ts` — that never interacts with ground traffic or pedestrians);
+ * no vehicle yields to pedestrians or other vehicles beyond not spawning on
+ * top of one another; despawn and vehicle spawn placement use horizontal
+ * (x, z) distance only (`playerY` only feeds elevated-pedestrian spawn
+ * distance, see `Spawner.ts`'s `pickElevatedSpawnCell`); no camera-heading
+ * bias on spawn angle, so an unlucky roll can in principle spawn just
+ * outside the view frustum rather than strictly behind the camera.
  */
 
 import * as THREE from 'three';
 import { DEFAULT_ENTITY_CONFIG, EntitySimulation, type EntitySimulationConfig } from './EntitySimulation';
 import { buildNavGrid } from './NavGrid';
+import { deriveSkyLanes } from './SkyLane';
 import { EntityRenderer } from '../engine/EntityRenderer';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../world/coords';
 import type { World } from '../world/World';
@@ -39,18 +41,22 @@ export class EntitySystem {
 
   constructor(scene: THREE.Scene, config: EntitySimulationConfig = DEFAULT_ENTITY_CONFIG) {
     this.simulation = new EntitySimulation(config);
-    this.renderer = new EntityRenderer(scene, config.maxPedestrians, config.maxVehicles);
+    this.renderer = new EntityRenderer(scene, config.maxPedestrians, config.maxVehicles, config.maxFlyingVehicles);
   }
 
   /**
-   * Rebuilds the sidewalk/road navigation grid from `world`'s current voxel
-   * state and clears every existing entity. Call after `generateCity` or
-   * `importWorld` — both leave the previous population's nav data stale.
+   * Rebuilds the sidewalk/road navigation grid and sky lanes from `world`'s
+   * current voxel state, and clears every existing entity. Call after
+   * `generateCity` or `importWorld` — both leave the previous population's
+   * nav data stale. Sky lanes are re-derived (not cached) every call, same
+   * as the nav grid itself — see `SkyLane.ts`'s doc comment for why a fresh
+   * per-lane clearance scan against real voxel data matters here.
    */
   rebuild(world: World, groundY: number, seed: string | number): void {
     this.groundY = groundY;
     const grid = buildNavGrid(world, WORLD_SIZE_X, WORLD_SIZE_Z, groundY);
-    this.simulation.reset(grid, seed);
+    const skyLanes = deriveSkyLanes(world, grid.road, WORLD_SIZE_X, WORLD_SIZE_Z);
+    this.simulation.reset(grid, seed, skyLanes);
   }
 
   /**
@@ -66,7 +72,13 @@ export class EntitySystem {
 
   /** Per-animation-frame sync of instanced mesh matrices from current simulation state. */
   render(): void {
-    this.renderer.update(this.simulation.pedestrianList, this.simulation.vehicleList, this.groundY, this.elapsedTime);
+    this.renderer.update(
+      this.simulation.pedestrianList,
+      this.simulation.vehicleList,
+      this.simulation.flyingVehicleList,
+      this.groundY,
+      this.elapsedTime,
+    );
   }
 
   dispose(): void {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ENTITY_CONFIG, EntitySimulation, type EntitySimulationConfig } from '../src/entities/EntitySimulation';
 import type { ElevatedLevel, NavGrid } from '../src/entities/NavGrid';
+import type { SkyLane } from '../src/entities/SkyLane';
 
 const ELEVATED_Y = 30;
 
@@ -41,6 +42,11 @@ const TEST_CONFIG: EntitySimulationConfig = {
   spawnMaxRadius: 20,
   despawnRadius: 30,
 };
+
+/** A single straight east-west sky lane, fixed at z=30, spanning the whole test grid. */
+function makeStraightLane(overrides: Partial<SkyLane> = {}): SkyLane {
+  return { axis: 'x', fixed: 30, altitude: 116, start: 0, end: 60, ...overrides };
+}
 
 describe('EntitySimulation', () => {
   it('does nothing before reset() has provided a NavGrid', () => {
@@ -167,6 +173,102 @@ describe('EntitySimulation', () => {
       expect(ped.cellX).toBeLessThan(deckEnd);
       expect(ped.cellZ).toBeGreaterThanOrEqual(deckStart);
       expect(ped.cellZ).toBeLessThan(deckEnd);
+    }
+  });
+});
+
+describe('EntitySimulation flying vehicles', () => {
+  it('spawns none when reset() is given no sky lanes (the default)', () => {
+    const sim = new EntitySimulation({ ...TEST_CONFIG, maxFlyingVehicles: 10 });
+    sim.reset(makeOpenGrid(60, 60), 'sim-no-lanes');
+
+    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 1, 30);
+
+    expect(sim.flyingVehicleList).toHaveLength(0);
+  });
+
+  it('ramps up to the configured flying-vehicle cap when a lane is available near the player', () => {
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxFlyingVehicles: 6 };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(60, 60), 'sim-flying-ramp', [makeStraightLane()]);
+
+    for (let i = 0; i < 400; i++) sim.update(1 / 60, 30, 1, 30);
+
+    expect(sim.flyingVehicleList.length).toBe(config.maxFlyingVehicles);
+  });
+
+  it('keeps every flying vehicle exactly at its lane altitude over a long soak, and only moving along its own fixed heading', () => {
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxFlyingVehicles: 4 };
+    const sim = new EntitySimulation(config);
+    const lane = makeStraightLane({ altitude: 128, fixed: 150, end: 300 });
+    sim.reset(makeOpenGrid(300, 300), 'sim-flying-soak', [lane]);
+
+    for (let i = 0; i < 60; i++) sim.update(1 / 60, 150, 1, 150);
+    expect(sim.flyingVehicleList.length).toBeGreaterThan(0);
+
+    // Snapshot each vehicle's heading and cross-axis coordinate, then soak
+    // for a long stretch and confirm neither ever drifted (a flying vehicle
+    // never turns -- see `FlyingVehicle.ts`).
+    const snapshot = sim.flyingVehicleList.map((v) => ({ dirX: v.dirX, dirZ: v.dirZ, cross: v.z }));
+
+    for (let i = 0; i < 3000; i++) sim.update(1 / 60, 150, 1, 150);
+
+    for (const vehicle of sim.flyingVehicleList) {
+      expect(vehicle.y).toBe(128);
+    }
+    // New vehicles may have spawned/despawned during the soak (that's
+    // expected churn against the world edge), but every vehicle present at
+    // both ends of a snapshot window must be unchanged in heading/cross-axis.
+    const survivorsByStart = new Map(snapshot.map((s) => [`${s.dirX},${s.dirZ},${s.cross}`, s]));
+    for (const vehicle of sim.flyingVehicleList) {
+      const key = `${vehicle.dirX},${vehicle.dirZ},${vehicle.z}`;
+      if (survivorsByStart.has(key)) {
+        const before = survivorsByStart.get(key)!;
+        expect(vehicle.dirZ).toBe(before.dirZ);
+        expect(vehicle.z).toBe(before.cross);
+      }
+    }
+  });
+
+  it('despawns flying vehicles that end up beyond the despawn radius', () => {
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxFlyingVehicles: 6, despawnRadius: 30 };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(300, 300), 'sim-flying-despawn', [makeStraightLane({ fixed: 150, end: 300 })]);
+
+    for (let i = 0; i < 50; i++) sim.update(1 / 60, 150, 1, 150);
+    expect(sim.flyingVehicleList.length).toBeGreaterThan(0);
+
+    // Player teleports far away -- every existing flying vehicle is now well beyond despawnRadius.
+    sim.update(1 / 60, 150 + 10_000, 1, 150);
+
+    for (const vehicle of sim.flyingVehicleList) {
+      const dist = Math.hypot(vehicle.x - (150 + 10_000), vehicle.z - 150);
+      expect(dist).toBeLessThanOrEqual(config.despawnRadius);
+    }
+  });
+
+  it('reset() clears every flying vehicle and rebuilds cleanly against new lanes', () => {
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxFlyingVehicles: 6 };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(60, 60), 'sim-flying-before', [makeStraightLane()]);
+    for (let i = 0; i < 400; i++) sim.update(1 / 60, 30, 1, 30);
+    expect(sim.flyingVehicleList.length).toBeGreaterThan(0);
+
+    sim.reset(makeOpenGrid(60, 60), 'sim-flying-after'); // no lanes this time
+
+    expect(sim.flyingVehicleList).toHaveLength(0);
+    sim.update(1 / 60, 30, 1, 30);
+    expect(sim.flyingVehicleList).toHaveLength(0); // still none -- no lane to spawn from
+  });
+
+  it('never exceeds maxFlyingVehicles, even after a long soak with continuous edge despawns and respawns', () => {
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxFlyingVehicles: 5 };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(60, 60), 'sim-flying-cap-soak', [makeStraightLane({ start: 0, end: 60 })]);
+
+    for (let i = 0; i < 5000; i++) {
+      sim.update(1 / 60, 30, 1, 30);
+      expect(sim.flyingVehicleList.length).toBeLessThanOrEqual(config.maxFlyingVehicles);
     }
   });
 });

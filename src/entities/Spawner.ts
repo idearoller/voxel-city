@@ -7,6 +7,7 @@
  */
 
 import type { NavGrid } from './NavGrid';
+import type { SkyLane } from './SkyLane';
 import type { Rng } from '../gen/rng';
 
 const TWO_PI = Math.PI * 2;
@@ -137,6 +138,45 @@ export function pickElevatedSpawnCell(
       const cell = candidates[Math.floor(rng.float(0, candidates.length))] as { x: number; z: number };
       return { x: cell.x, z: cell.z, y: (grid.elevatedLevels[i] as (typeof grid.elevatedLevels)[number]).y };
     }
+  }
+  return null;
+}
+
+/**
+ * Picks a spawn for a flying vehicle: a uniformly random lane, then a
+ * uniformly random point along that lane's travel-axis range, retried up to
+ * `maxAttempts` times until the resulting world position falls in the
+ * [minRadius, maxRadius) annulus around the player (2D, ignoring altitude —
+ * see `EntitySimulationConfig`'s doc comment for why flying-vehicle spawn
+ * distance deliberately reuses the ground annulus rather than growing with
+ * altitude the way `pickElevatedSpawnCell` does). Returns `null` if no
+ * attempt lands in range (e.g. no lane currently passes near the player) or
+ * if `lanes` is empty.
+ */
+export function pickFlyingVehicleSpawn(
+  lanes: readonly SkyLane[],
+  playerX: number,
+  playerZ: number,
+  minRadius: number,
+  maxRadius: number,
+  rng: Rng,
+  maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+): { lane: SkyLane; travelCoord: number; direction: 1 | -1 } | null {
+  if (lanes.length === 0) return null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const lane = rng.pick(lanes);
+    const travelCoord = rng.float(lane.start, lane.end);
+    const x = lane.axis === 'x' ? travelCoord : lane.fixed;
+    const z = lane.axis === 'z' ? travelCoord : lane.fixed;
+
+    const dx = x - playerX;
+    const dz = z - playerZ;
+    const distSq = dx * dx + dz * dz;
+    if (distSq < minRadius * minRadius || distSq >= maxRadius * maxRadius) continue;
+
+    const direction: 1 | -1 = rng.chance(0.5) ? 1 : -1;
+    return { lane, travelCoord, direction };
   }
   return null;
 }
