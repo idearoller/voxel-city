@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { planBillboards, writeBillboard, type Billboard } from '../src/gen/infrastructure';
-import { scanBillboardFaces, type BillboardFace } from '../src/engine/BillboardScanner';
+import { scanBillboardFaces, scanBillboardFacesViaWorldGetBlock, type BillboardFace } from '../src/engine/BillboardScanner';
 import type { BuildingPlan, BuildingTier, DoorSide } from '../src/gen/buildings';
 import { generateCity } from '../src/gen/CityGenerator';
 import { District } from '../src/gen/districts';
@@ -277,5 +277,25 @@ describe('scanBillboardFaces normal-direction oracle (real generated cities)', (
     // would itself indicate a real regression in the enclosure heuristic,
     // not just the known edge case.
     expect(totalMatched / totalBillboards).toBeGreaterThan(0.6);
+  });
+});
+
+describe('scanBillboardFaces performance-optimization parity', () => {
+  it('produces byte-identical faces to the pre-optimization world.getBlock path on a real generated city', () => {
+    // scanBillboardFaces now rejects the vast majority of cells by reading
+    // Chunk.voxels directly instead of going through World.getBlock (see
+    // BillboardScanner.ts's doc comment for the measured speedup). Both
+    // paths share every line of logic past that one read (scanCore), so
+    // this asserts the swap changed nothing observable: same faces, in the
+    // same order, across a whole real city's worth of chunks -- not just
+    // the same count.
+    const world = new World();
+    generateCity(world, 'billboard-scan-parity-01');
+
+    const fastFaces = scanBillboardFaces(world);
+    const referenceFaces = scanBillboardFacesViaWorldGetBlock(world);
+
+    expect(fastFaces.length).toBeGreaterThan(0);
+    expect(fastFaces).toEqual(referenceFaces);
   });
 });

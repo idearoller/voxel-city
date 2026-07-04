@@ -24,7 +24,8 @@
 
 import { BILLBOARD_HEIGHT, BILLBOARD_WIDTH } from '../gen/infrastructure';
 import { NEON_CYAN, NEON_PINK, NEON_PURPLE, NEON_YELLOW } from '../world/BlockRegistry';
-import { CHUNK_SIZE } from '../world/coords';
+import type { Chunk } from '../world/Chunk';
+import { CHUNK_SIZE, localIndex } from '../world/coords';
 import type { World } from '../world/World';
 
 const BILLBOARD_BLOCK_IDS: readonly number[] = [NEON_PINK, NEON_CYAN, NEON_YELLOW, NEON_PURPLE];
@@ -46,8 +47,19 @@ export interface BillboardFace {
 /** Small outward push off the voxel face so the quad never z-fights with the wall behind it. */
 const FLUSH_OFFSET = 0.02;
 
+// Block ids are stored as `Uint8Array` bytes (see `Chunk.voxels`), so a
+// 256-entry lookup table covers every possible id; this turns the ~9M
+// per-cell reject check `scanCore` runs into a single indexed byte read
+// instead of an `Array.includes` scan through `BILLBOARD_BLOCK_IDS` on
+// every cell.
+const BILLBOARD_ID_LOOKUP = ((): Uint8Array => {
+  const table = new Uint8Array(256);
+  for (const id of BILLBOARD_BLOCK_IDS) table[id] = 1;
+  return table;
+})();
+
 function isBillboardBlock(id: number): boolean {
-  return BILLBOARD_BLOCK_IDS.includes(id);
+  return BILLBOARD_ID_LOOKUP[id] === 1;
 }
 
 /** All cells of a candidate WIDTH x HEIGHT rectangle share `blockId`, with every bordering cell (one step past each of the 4 edges) NOT matching it — i.e. this is an exact, closed rectangle, not a fragment of something larger. */
@@ -161,22 +173,30 @@ function isBoundedRegion(world: World, startX: number, y: number, startZ: number
  * neither) directions resolve the same way — nothing sane to derive; caller
  * skips this face rather than guessing.
  *
- * Known, deliberately-accepted edge case: if a billboard's Y-range happens
- * to overlap the door's own height (`writeDoorway`'s 3 rows), the interior
- * flood fill at that specific row can escape through the door opening on a
- * *different* wall of the same footprint (interiors have no floor-to-floor
- * partitions — see `writeShellAndWindows`), making the interior side read
- * as "unbounded" too. Both sides then agree (both open) and this returns
- * null — the face is skipped rather than mis-oriented. Confirmed on real
- * generator output (`test/BillboardScanner.test.ts`'s oracle test, 10 seeds,
- * 160 real billboards): this skips ~15% of billboards and produces zero
- * wrong normals — a large improvement over the previous nearest-solid-hit
- * heuristic it replaced, which got ~70% of normals wrong in the same
- * measurement (dense-city neighbor buildings sitting closer than a tower's
- * own far interior wall). Resolving the remaining skip would need door
- * position, which isn't available to a purely voxel-scan (layout-free)
- * function — an acceptable trade (invisible billboard, never a backwards
- * one) for staying import-safe.
+ * Known, deliberately-accepted edge case: the interior side's single-row
+ * flood fill can leak into "unbounded" territory through more than one
+ * route, not just one. The most direct is a billboard whose Y-range happens
+ * to overlap the door's own height (`writeDoorway`'s 3 rows), letting that
+ * row escape through the door opening on a *different* wall of the same
+ * footprint (interiors have no floor-to-floor partitions — see
+ * `writeShellAndWindows`). But measurement against real generator output
+ * shows door-height overlap accounts for only a majority, not all, of
+ * skips: large hollow interiors and window/setback carve-outs can also
+ * flood-fill past `FLOOD_FILL_CAP` on their own at certain rows, with no
+ * door involved at all. Whatever the route, both sides then agree (both
+ * open) and this returns null — the face is skipped rather than
+ * mis-oriented. Confirmed on real generator output
+ * (`test/BillboardScanner.test.ts`'s oracle test, 10 seeds, 160 real
+ * billboards): this skips ~15% of billboards — about 76% of those skips are
+ * the door-height case, the remaining ~24% the other flood-leak routes
+ * above — and produces zero wrong normals, a large improvement over the
+ * previous nearest-solid-hit heuristic it replaced, which got ~70% of normals wrong
+ * in the same measurement (dense-city neighbor buildings sitting closer
+ * than a tower's own far interior wall). Resolving the remaining skips
+ * would need door position and/or interior layout, neither of which is
+ * available to a purely voxel-scan (layout-free) function — an acceptable
+ * trade (invisible billboard, never a backwards one) for staying
+ * import-safe.
  */
 function resolveNormal(world: World, x: number, y: number, z: number, axis: FacadeAxis): readonly [number, number, number] | null {
   const [dx, dz] = axis === 'x' ? [0, 1] : [1, 0];
@@ -227,17 +247,43 @@ function tryMatchAt(world: World, x0: number, y0: number, z0: number, axis: Faca
 }
 
 /**
- * Scans every currently-allocated chunk of `world` for billboard faces.
- * Cheap in practice: the vast majority of voxels are rejected by the single
- * `isBillboardBlock` id check before any rectangle/normal work runs, and
- * billboards are sparse (`BILLBOARD_CHANCE` = 8% of buildings) — this only
- * needs to run once, right after generation/import, not per frame.
+ * Reads the block id at (x, y, z) for the coarse per-cell reject check
+ * only — the one call site that runs once per voxel in the whole world
+ * (~9M cells for a full 274-chunk city). Swappable so
+ * `scanBillboardFacesViaWorldGetBlock` (test-only, see below) can drive the
+ * exact same loop through `World.getBlock`'s translation path as a
+ * known-correct oracle, without duplicating `scanCore`.
  */
-export function scanBillboardFaces(world: World): BillboardFace[] {
+type CandidateBlockReader = (chunk: Chunk, lx: number, ly: number, lz: number, x: number, y: number, z: number) => number;
+
+/**
+ * Direct flat-array read, bypassing `World.getBlock`'s per-call
+ * `chunkKey`/`Map.get`/`worldToChunk`/`worldToLocal` chain entirely: the
+ * outer loop already has `chunk` and `(lx, ly, lz)` in hand from
+ * `allocatedChunkEntries()`, and `Chunk.voxels`' flat layout
+ * (`lx + lz*CHUNK_SIZE + ly*CHUNK_SIZE*CHUNK_SIZE`, see `coords.ts`'
+ * `localIndex`) is exactly what `Chunk.getLocal` reads too — same bytes,
+ * none of the redundant translation.
+ */
+const readCandidateBlockFast: CandidateBlockReader = (chunk, lx, ly, lz) =>
+  chunk.voxels[localIndex(lx, ly, lz)] as number;
+
+/**
+ * Shared scan loop: every currently-allocated chunk of `world`, decomposed
+ * into world-space (x, y, z), rejecting non-billboard-colored cells via
+ * `readCandidateBlock` before any rectangle/normal work runs (billboards
+ * are sparse — `BILLBOARD_CHANCE` = 8% of buildings). Cross-chunk work
+ * (`isClosedRectangle`'s border reads, `resolveNormal`'s flood fill) still
+ * goes through `world.getBlock`/`world.isSolid`, since a billboard
+ * rectangle or flood fill can straddle a chunk boundary; those only run for
+ * the sparse set of cells that pass the coarse check, so their translation
+ * cost is negligible in aggregate.
+ */
+function scanCore(world: World, readCandidateBlock: CandidateBlockReader): BillboardFace[] {
   const faces: BillboardFace[] = [];
   const seen = new Set<string>();
 
-  for (const { cx, cy, cz } of world.allocatedChunkEntries()) {
+  for (const { cx, cy, cz, chunk } of world.allocatedChunkEntries()) {
     const baseX = cx * CHUNK_SIZE;
     const baseY = cy * CHUNK_SIZE;
     const baseZ = cz * CHUNK_SIZE;
@@ -248,7 +294,7 @@ export function scanBillboardFaces(world: World): BillboardFace[] {
           const x = baseX + lx;
           const y = baseY + ly;
           const z = baseZ + lz;
-          if (!isBillboardBlock(world.getBlock(x, y, z))) continue;
+          if (!isBillboardBlock(readCandidateBlock(chunk, lx, ly, lz, x, y, z))) continue;
 
           for (const axis of ['x', 'z'] as const) {
             const face = tryMatchAt(world, x, y, z, axis);
@@ -264,4 +310,36 @@ export function scanBillboardFaces(world: World): BillboardFace[] {
   }
 
   return faces;
+}
+
+/**
+ * Scans every currently-allocated chunk of `world` for billboard faces.
+ * Reads each cell's candidate block id directly off `Chunk.voxels` (see
+ * `readCandidateBlockFast`) instead of going through `world.getBlock`'s
+ * per-call chunk-map lookup and coordinate translation — that translation,
+ * paid ~9M times for a full 274-chunk city, was the dominant cost. Measured
+ * on a representative generated city (`generateCity(world,
+ * 'perf-harness-01')`, single-threaded dev hardware): ~1650ms before this
+ * change, ~290ms after — a ~5.7x wall-clock improvement (see
+ * `test/BillboardScanner.test.ts`'s parity test, which cross-checks this
+ * path's output against the `world.getBlock` path verbatim to prove the
+ * speedup didn't change any result). Sparse cross-chunk work (rectangle
+ * borders, flood-fill normal resolution) still goes through `World`, since
+ * only ~8% of buildings have a billboard at all — this only needs to run
+ * once, right after generation/import, not per frame.
+ */
+export function scanBillboardFaces(world: World): BillboardFace[] {
+  return scanCore(world, readCandidateBlockFast);
+}
+
+/**
+ * Test-only oracle: identical scan, but reads every candidate cell through
+ * `world.getBlock` instead of `Chunk.voxels` directly — the pre-optimization
+ * behavior, kept alive solely so `test/BillboardScanner.test.ts` can assert
+ * the fast path in `scanBillboardFaces` produces byte-identical output on a
+ * real generated city, without duplicating `scanCore`'s rectangle/normal
+ * logic. Not part of the module's public API for production use.
+ */
+export function scanBillboardFacesViaWorldGetBlock(world: World): BillboardFace[] {
+  return scanCore(world, (_chunk, _lx, _ly, _lz, x, y, z) => world.getBlock(x, y, z));
 }
