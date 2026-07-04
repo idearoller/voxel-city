@@ -395,6 +395,274 @@ function deriveStairLinks(world: World, grid: Pick<NavGrid, 'width' | 'depth' | 
   return links;
 }
 
+// ---------------------------------------------------------------------------
+// Tower-internal sky-lobby floors (ground <-> SKY_LEVELS via a tower's own
+// spiral stair shaft — see `infrastructure.ts`'s `planStairShafts`/
+// `planSkyLobbies`).
+//
+// This was deferred in an earlier phase because recognizing a sky-lobby
+// *floor* citywide, the same way `buildElevatedLevel` recognizes a bridge
+// deck (a material + headroom + "floats over open air" shape), doesn't work:
+// a lobby floor is CONCRETE, same as a roof slab, a setback terrace deck, and
+// every ordinary building floor `writeSetbackDecks` caps a tier with — none
+// of that is distinguishable from a genuine lobby by local block shape alone
+// (unlike a bridge deck's METAL, which nothing else in the city writes at
+// deck height). Scanning every CONCRETE-with-headroom cell at a `SKY_LEVELS`
+// row citywide and calling all of it "walkable" would light up every
+// setback terrace in the city as a pedestrian deck, most of which were never
+// meant to be one.
+//
+// The way out: never classify a floor in isolation. Only ever treat a patch
+// of floor as walkable *because* it's touching a stair tread this module has
+// already, independently, proven connects all the way down to real street
+// sidewalk (`traceStairDown` — the exact same proof `deriveStairLinks` uses
+// for external walkway stairs). A tower's own spiral shaft
+// (`infrastructure.ts`'s `STAIR_SPIRAL_RING`) is built from the same
+// CONCRETE-tread-plus-headroom voxel shape as a straight walkway stair, so
+// `isStairTread`/`traceStairDown` already know how to walk it — they just
+// need a starting point, which `buildElevatedLevel`'s METAL-only scan never
+// hands them for a tower (a lobby floor is CONCRETE, not METAL).
+// `findVerifiedStairTopAnchors` supplies that starting point directly: scan
+// each known `SKY_LEVELS` row (bounded, same "known rows only" discipline as
+// `ELEVATED_DECK_LEVELS`) for stair-tread-shaped cells, and keep only the
+// ones `traceStairDown` can actually walk down to genuine sidewalk. Ordinary
+// floor cells (the vast majority of any `isStairTread`-shaped candidate at a
+// sky-lobby's own height, since most indoor ceilings clear 2 voxels) fail
+// that proof in their very first hop — a flat floor's neighbors never drop
+// exactly one riser per step towards the ground the way a real staircase's
+// do (`isStairTread`'s own doc comment) — so they're rejected as cheaply as
+// `deriveStairLinks` already rejects them for the external-stair case.
+//
+// Once a real stair top is proven, `deriveTowerLobbyCells` floods outward
+// from its immediate neighbors (each anchor's flood bounded by its own
+// `MAX_LOBBY_FLOOD_CELLS_PER_TOWER` budget — see that constant's doc comment
+// for why this must be per-tower rather than one counter shared across every
+// tower at a row, and naturally bounded again by the tower's own walls — a
+// lobby floor's perimeter is solid wall material, not CONCRETE, so the flood
+// can't escape into another building or out over open air) using the same
+// solid-plus-headroom shape a lobby floor actually has. This never
+// classifies a floor citywide — it only ever explores outward from a proven
+// stair connection, so a setback terrace with no bridge/stair of its own is
+// never touched, no matter what shape its floor has.
+
+/**
+ * Hard ceiling on how many cells a *single connected flood component* may
+ * claim before it's cut short — generously above any real tower footprint
+ * (`BRIDGE_MIN_TOWER_FOOTPRINT` and up, i.e. well under 200x200), the same
+ * defensive-not-load-bearing role `MAX_STAIR_RISERS` plays for a stair
+ * chain. This is a *per-tower* budget, not a citywide one: `deriveTowerLobbyCells`
+ * gives every distinct component (one per tower's lobby — see that
+ * function's doc comment for why a tower with several bridge levels still
+ * only ever floods its shared lobby footprint once) its own fresh counter.
+ * A single shared counter across every tower at a `SKY_LEVELS` row was an
+ * earlier, real bug here: with several dozen towers flooding in the same
+ * pass, one shared budget got exhausted well before every tower's own
+ * (small) lobby was fully covered, truncating whichever ring of each lobby
+ * happened to be reached last — almost always the outer ring nearest the
+ * bridge doorway, since the flood starts at the stair (typically
+ * tower-centered) and works outward. That silently walled pedestrians into
+ * an enclosed inner lobby with no path to the very bridge this feature
+ * exists to feed traffic to (caught on a review sweep: ~11/24-18/24 stair
+ * tops per seed couldn't reach their own bridge span with the shared 4000
+ * cap, vs. effectively 100% once the budget was made per-tower).
+ */
+const MAX_LOBBY_FLOOD_CELLS_PER_TOWER = 20_000;
+
+/**
+ * True if (x, y, z) has the shape a walkable interior floor needs: solid
+ * CONCRETE with 2 clear voxels of standing headroom above (same clearance
+ * `isStairTread` requires of a riser, since both are "somewhere a pedestrian
+ * stands"). Unlike `buildElevatedLevel`'s bridge/walkway check, there's no
+ * "AIR below" requirement — a floating deck needs that to rule out a
+ * parapet sitting on a solid roof, but an ordinary interior floor is
+ * *supposed* to have solid structure beneath it (another tier's setback
+ * deck, most commonly), so requiring open air below would wrongly exclude
+ * genuine lobby floor rather than rule out a false positive. This shape
+ * alone still isn't unique to a lobby (see this section's doc comment) —
+ * callers only ever use it seeded from an already-proven stair connection,
+ * never as a standalone citywide classifier.
+ */
+function isLobbyFloorCell(world: World, x: number, y: number, z: number): boolean {
+  return world.getBlock(x, y, z) === CONCRETE && world.getBlock(x, y + 1, z) === AIR && world.getBlock(x, y + 2, z) === AIR;
+}
+
+/**
+ * Every (x, z) at row `y` that is a real, ground-connected stair's top
+ * tread — an `isStairTread` cell whose descending chain (`traceStairDown`,
+ * called with the candidate itself as `cameFrom` so all 4 neighbors are
+ * eligible for the first hop, since there's no known "arrived from" deck
+ * cell the way an external walkway stair has one) actually reaches genuine
+ * sidewalk. Most candidates at a real sky-lobby's height are ordinary floor,
+ * not a stair top, and are rejected in their very first hop (see this
+ * section's doc comment) — cheap enough to scan every cell of a known row,
+ * same order of cost as `buildElevatedLevel`'s own per-row scan.
+ *
+ * A real lobby has a second, more subtle way to produce a *spurious* extra
+ * candidate here, not just an outright false one: `planSkyLobbies` leaves a
+ * handful of columns just below the true top tread uncovered by the floor
+ * slab (`SkyLobby.openColumns`, for the riser headroom just beneath them —
+ * see `infrastructure.ts`'s doc comment for exactly which ones and why).
+ * The ordinary lobby floor cells *just outside* the shaft, orthogonally
+ * touching one of those open columns, still pass `isStairTread` themselves
+ * (same solid-plus-headroom shape as any lobby floor) and their descent
+ * succeeds immediately by stepping onto that open column's own riser one
+ * row down — a real, continuing tread, just not the one this candidate was
+ * actually "meant" to be. Rather than trying to tell a genuine top tread
+ * apart from this lookalike by local shape (which is exactly the
+ * unreliable, deferred approach this whole section avoids), every candidate
+ * that merges into the *same* downward chain is deduped here, keyed by the
+ * first real riser its descent actually lands on — keeping only one
+ * candidate per distinct chain, so a lobby's own floor never loses more
+ * than the genuine top tread to the exclusion set in `deriveTowerLobbyCells`.
+ */
+function findVerifiedStairTopAnchors(
+  world: World,
+  grid: Pick<NavGrid, 'width' | 'depth' | 'groundY' | 'sidewalk'>,
+  y: number,
+): Array<{ x: number; z: number }> {
+  const seenChains = new Set<string>();
+  const anchors: Array<{ x: number; z: number }> = [];
+  for (let x = 0; x < grid.width; x++) {
+    for (let z = 0; z < grid.depth; z++) {
+      if (!isStairTread(world, x, y, z)) continue;
+      const chain = traceStairDown(world, grid, x, y, z, x, z);
+      if (!chain) continue;
+
+      // `chain[0]` is the candidate itself; `chain[1]` (guaranteed to exist —
+      // a successful chain always has at least a ground-landing hop past the
+      // starting tread) is the first real riser it actually lands on. Two
+      // candidates sharing that cell are the same underlying shaft entry.
+      const firstRiser = chain[1] as { x: number; y: number; z: number };
+      const chainKey = `${firstRiser.x},${firstRiser.y},${firstRiser.z}`;
+      if (seenChains.has(chainKey)) continue;
+      seenChains.add(chainKey);
+
+      anchors.push({ x, z });
+    }
+  }
+  return anchors;
+}
+
+/**
+ * Every walkable sky-lobby floor cell at row `y`, found by flooding outward
+ * from the neighbors of every real, proven stair top at that row
+ * (`findVerifiedStairTopAnchors`) — never from an un-anchored cell. A
+ * verified stair top's own (x, z) is excluded from every flood (`excluded`),
+ * the same way `deriveStairLinks`' top tread is deliberately left out of
+ * `ElevatedLevel.walkable` for the external-stair case: it stays a *stair*
+ * cell, one flat lateral hop short of "on the deck", so `deriveStairLinks`'
+ * own neighbor scan (unmodified — see `buildNavGrid`) still finds it as a
+ * non-walkable neighbor of the lobby floor this function returns, and
+ * builds the connecting `StairLink` for it exactly the way it already does
+ * for a walkway.
+ *
+ * Each anchor gets its *own* bounded flood (`MAX_LOBBY_FLOOD_CELLS_PER_TOWER`)
+ * rather than sharing one budget across every anchor at this row — a
+ * citywide row can have several dozen towers' worth of anchors, and a
+ * shared counter starves whichever tower's lobby happens to be flooded
+ * last, truncating it well short of its own real footprint (see that
+ * constant's doc comment for the concrete regression this caused: nearly
+ * half of stair tops across a real seed sweep couldn't reach their own
+ * bridge doorway). `globallyVisited` still spans every anchor at this row,
+ * not just the current one — a tower with bridges at multiple levels shares
+ * one lobby floor per level, and (rarely) a tower's own dedup in
+ * `findVerifiedStairTopAnchors` can still leave two anchors bordering the
+ * exact same floor component; the second one's flood is skipped entirely
+ * (all its neighbor seeds already visited) rather than needlessly re-walking
+ * ground the first anchor's flood already covered.
+ */
+function deriveTowerLobbyCells(
+  world: World,
+  grid: Pick<NavGrid, 'width' | 'depth' | 'groundY' | 'sidewalk'>,
+  y: number,
+): Array<{ x: number; z: number }> {
+  const anchors = findVerifiedStairTopAnchors(world, grid, y);
+  if (anchors.length === 0) return [];
+
+  const excluded = new Set(anchors.map((a) => `${a.x},${a.z}`));
+  const globallyVisited = new Set<string>();
+  const allCells: Array<{ x: number; z: number }> = [];
+
+  for (const anchor of anchors) {
+    const componentCells: Array<{ x: number; z: number }> = [];
+    const queue: Array<{ x: number; z: number }> = [];
+
+    const tryEnqueue = (x: number, z: number): void => {
+      if (componentCells.length >= MAX_LOBBY_FLOOD_CELLS_PER_TOWER) return;
+      const key = `${x},${z}`;
+      if (globallyVisited.has(key) || excluded.has(key)) return;
+      if (!inBounds(grid, x, z)) return;
+      if (!isLobbyFloorCell(world, x, y, z)) return;
+      globallyVisited.add(key);
+      const cell = { x, z };
+      componentCells.push(cell);
+      queue.push(cell);
+    };
+
+    for (const [dx, dz] of STAIR_NEIGHBOR_OFFSETS) tryEnqueue(anchor.x + dx, anchor.z + dz);
+
+    let head = 0;
+    while (head < queue.length && componentCells.length < MAX_LOBBY_FLOOD_CELLS_PER_TOWER) {
+      const cur = queue[head++] as { x: number; z: number };
+      for (const [dx, dz] of STAIR_NEIGHBOR_OFFSETS) tryEnqueue(cur.x + dx, cur.z + dz);
+    }
+
+    for (const cell of componentCells) allCells.push(cell);
+  }
+
+  return allCells;
+}
+
+/** Builds a brand-new `ElevatedLevel` from a plain cell list — used when a `SKY_LEVELS` row has a tower lobby but no bridge deck of its own already scanned into `elevatedLevels` (should be rare in practice, since a lobby only exists alongside a bridge at that same level, but a level-agnostic merge shouldn't assume it). */
+function buildLevelFromCells(width: number, depth: number, y: number, cells: ReadonlyArray<{ x: number; z: number }>): ElevatedLevel {
+  const walkable = new Uint8Array(width * depth);
+  for (const c of cells) walkable[cellIndex(width, c.x, c.z)] = 1;
+  return { y, walkable, cells: cells.slice() };
+}
+
+/** Merges `lobbyCells` into a copy of `level` (deduping against cells already walkable, e.g. a bridge deck cell that happens to also satisfy the lobby shape). */
+function mergeLobbyCellsIntoLevel(width: number, level: ElevatedLevel, lobbyCells: ReadonlyArray<{ x: number; z: number }>): ElevatedLevel {
+  const walkable = level.walkable.slice();
+  const cells = level.cells.slice();
+  for (const c of lobbyCells) {
+    const i = cellIndex(width, c.x, c.z);
+    if (walkable[i] === 1) continue;
+    walkable[i] = 1;
+    cells.push(c);
+  }
+  return { y: level.y, walkable, cells };
+}
+
+/**
+ * Extends `levels` (the METAL-only bridge/walkway scan from `buildElevatedLevel`)
+ * with every tower's own sky-lobby floor, per `SKY_LEVELS` row (see this
+ * section's doc comment). A level that already exists (the common case — a
+ * lobby only exists alongside a bridge at that same level, so its deck is
+ * already scanned in) gets its lobby cells merged in; the rare/defensive
+ * case of a lobby row with no existing entry gets a fresh one.
+ */
+function augmentWithTowerLobbies(
+  world: World,
+  width: number,
+  depth: number,
+  grid: Pick<NavGrid, 'width' | 'depth' | 'groundY' | 'sidewalk'>,
+  levels: readonly ElevatedLevel[],
+): ElevatedLevel[] {
+  let result = levels.slice();
+  for (const y of SKY_LEVELS) {
+    const lobbyCells = deriveTowerLobbyCells(world, grid, y);
+    if (lobbyCells.length === 0) continue;
+
+    const idx = result.findIndex((level) => level.y === y);
+    if (idx === -1) {
+      result.push(buildLevelFromCells(width, depth, y, lobbyCells));
+    } else {
+      result[idx] = mergeLobbyCellsIntoLevel(width, result[idx] as ElevatedLevel, lobbyCells);
+    }
+  }
+  return result;
+}
+
 /**
  * Scans `world`'s ground-surface row (`groundY`) over a `width` x `depth`
  * footprint into sidewalk/road boolean grids plus a road flow field, then
@@ -423,9 +691,10 @@ export function buildNavGrid(world: World, width: number, depth: number, groundY
   }
 
   const { flowX, flowZ } = computeFlowField(road, width, depth);
-  const elevatedLevels = ELEVATED_DECK_LEVELS.map((y) => buildElevatedLevel(world, width, depth, y)).filter(
+  const baseElevatedLevels = ELEVATED_DECK_LEVELS.map((y) => buildElevatedLevel(world, width, depth, y)).filter(
     (level) => level.walkable.some((cell) => cell === 1),
   );
+  const elevatedLevels = augmentWithTowerLobbies(world, width, depth, { width, depth, groundY, sidewalk }, baseElevatedLevels);
   const stairLinks = deriveStairLinks(world, { width, depth, groundY, sidewalk, elevatedLevels });
   return { width, depth, groundY, sidewalk, road, flowX, flowZ, elevatedLevels, stairLinks };
 }

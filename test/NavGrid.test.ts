@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildNavGrid, isElevatedWalkableCell, isRoadCell, isSidewalkCell } from '../src/entities/NavGrid';
 import { GROUND_SURFACE_Y, generateCity } from '../src/gen/CityGenerator';
-import { WALKWAY_Y, type Bridge, type Walkway } from '../src/gen/infrastructure';
+import { planSkyLobbies, WALKWAY_Y, type Bridge, type SkyLobby, type Walkway } from '../src/gen/infrastructure';
 import { AIR, ASPHALT, CONCRETE, GRAVEL, SIDEWALK } from '../src/world/BlockRegistry';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../src/world/coords';
 import { World } from '../src/world/World';
@@ -159,6 +159,21 @@ function walkwayFootprintCells(walkway: Walkway): Array<{ x: number; z: number }
   return cells;
 }
 
+/** A sky lobby's own real floor footprint (its tier rect minus `openColumns`, the shaft-continuation holes `writeSkyLobby` deliberately leaves open) -- the ground truth `NavGrid.ts`'s bounded tower-lobby flood should stay within. */
+function skyLobbyFootprintCells(lobby: SkyLobby): Array<{ x: number; z: number }> {
+  const open = new Set(lobby.openColumns.map((c) => `${c.x},${c.z}`));
+  const cells: Array<{ x: number; z: number }> = [];
+  for (let dx = 0; dx < lobby.width; dx++) {
+    for (let dz = 0; dz < lobby.depth; dz++) {
+      const x = lobby.x + dx;
+      const z = lobby.z + dz;
+      if (open.has(`${x},${z}`)) continue;
+      cells.push({ x, z });
+    }
+  }
+  return cells;
+}
+
 /** A bridge's *entire* 3-wide deck rectangle, rail rows/columns included (unlike `bridgeMiddleLaneCells`) -- the full footprint `writeBridge` paints METAL across. */
 function bridgeFullFootprintCells(bridge: Bridge): Array<{ x: number; z: number }> {
   const cells: Array<{ x: number; z: number }> = [];
@@ -221,14 +236,18 @@ describe('buildNavGrid elevated levels (real generator output)', () => {
     expect(walkwaysChecked).toBeGreaterThan(0);
   });
 
-  it('never marks a walkable elevated cell that is not part of some real bridge/walkway footprint (no rooftop-parapet or other false positives)', () => {
+  it('never marks a walkable elevated cell that is not part of some real bridge/walkway/sky-lobby footprint (no rooftop-parapet or other false positives)', () => {
     // The subset check Sam's review flagged as missing: it's not enough to
     // prove every real bridge/walkway cell is found (the two tests above) --
     // a scan that also picks up unrelated METAL-with-clearance geometry
     // (rooftop parapet trim sitting on a solid roof, an antenna platform,
     // etc.) would still pass those, while still populating pedestrians on a
     // skyscraper roof edge that was never a deck. This asserts the reverse
-    // direction: scanned walkable cells ⊆ real bridge/walkway footprints.
+    // direction: scanned walkable cells ⊆ real bridge/walkway/sky-lobby
+    // footprints -- `planSkyLobbies` (the same pure planner `generateCity`
+    // itself calls to write the real lobby slabs) is the ground truth for a
+    // tower's own sky-lobby floor, exactly as `bridges`/`walkways` already
+    // are for a deck.
     let levelsChecked = 0;
 
     for (const seed of seeds) {
@@ -242,6 +261,9 @@ describe('buildNavGrid elevated levels (real generator output)', () => {
       }
       for (const walkway of walkways) {
         for (const { x, z } of walkwayFootprintCells(walkway)) realDeckCellKeys.add(`${WALKWAY_Y},${x},${z}`);
+      }
+      for (const lobby of planSkyLobbies(bridges)) {
+        for (const { x, z } of skyLobbyFootprintCells(lobby)) realDeckCellKeys.add(`${lobby.y},${x},${z}`);
       }
 
       for (const level of grid.elevatedLevels) {
@@ -305,14 +327,19 @@ describe('buildNavGrid stairLinks (real generator output)', () => {
       const grid = buildNavGrid(world, WORLD_SIZE_X, WORLD_SIZE_Z, GROUND_SURFACE_Y);
 
       const walkwaysWithStairs = walkways.filter((w) => w.stairSteps.length > 0);
+      // A tower's own internal spiral stairs also produce `stairLinks` now
+      // (see `NavGrid.ts`'s tower-lobby derivation) -- scope this walkway-only
+      // check to links actually landing on `WALKWAY_Y`, the same way the
+      // assertions below do.
+      const walkwayLinks = grid.stairLinks.filter((link) => link.levelY === WALKWAY_Y);
       // Never more links than real walkways -- a link only exists per genuine stair.
-      expect(grid.stairLinks.length).toBeLessThanOrEqual(walkwaysWithStairs.length);
+      expect(walkwayLinks.length).toBeLessThanOrEqual(walkwaysWithStairs.length);
 
       for (const walkway of walkwaysWithStairs) {
-        if (grid.stairLinks.some((link) => linkMatchesWalkwayRisers(link, walkway))) walkwaysMatched++;
+        if (walkwayLinks.some((link) => linkMatchesWalkwayRisers(link, walkway))) walkwaysMatched++;
       }
 
-      for (const link of grid.stairLinks) {
+      for (const link of walkwayLinks) {
         expect(link.levelY).toBe(WALKWAY_Y);
 
         // Monotonic in y, one riser at a time, ground cell first -- except the

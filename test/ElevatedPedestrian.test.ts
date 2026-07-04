@@ -4,7 +4,7 @@ import { createPedestrianAt, stepPedestrian, type StairCommitment } from '../src
 import { GROUND_SURFACE_Y, generateCity } from '../src/gen/CityGenerator';
 import { WALKWAY_Y } from '../src/gen/infrastructure';
 import { createRng } from '../src/gen/rng';
-import { METAL } from '../src/world/BlockRegistry';
+import { CONCRETE, METAL } from '../src/world/BlockRegistry';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../src/world/coords';
 import { World } from '../src/world/World';
 
@@ -14,13 +14,22 @@ const TICKS = 1200; // 20s of sim time -- long enough to cross a deck end-to-end
 /**
  * End-to-end proof (per this repo's review convention: nav/geometry claims
  * must hold against real generator output, not just hand-built fixtures)
- * that a pedestrian confined to a real skybridge or walkway deck stays on
- * that deck — never drifts onto the rail-blocked edge rows, never drops to
- * ground level, and every cell it occupies has an actual solid METAL floor
- * beneath it — for as long as it walks.
+ * that a pedestrian confined to a real skybridge deck never drifts onto the
+ * rail-blocked edge rows and never floats or clips.
+ *
+ * Unlike an earlier phase, "stays on the deck forever" is no longer the
+ * invariant to prove (see the walkway test below, which already anticipated
+ * this for its own stairs): a bridge tower's own internal spiral stair now
+ * connects that same deck's level to its sky lobby and down to the street
+ * (see `NavGrid.ts`'s tower-lobby derivation), so a wandering bridge
+ * pedestrian may legitimately walk off the deck into the tower's lobby
+ * (CONCRETE, not METAL) or down the stairs. What must still hold at every
+ * tick: never floating (feet on the deck, the lobby floor, a stair step, or
+ * real ground sidewalk) and never clipping (mid-stair `y` never leaves the
+ * envelope between the step just departed and the one being sought).
  */
 describe('pedestrians walking real generated elevated decks', () => {
-  it('stays on a real bridge deck for many ticks: never off-deck, never at ground level, always over a solid floor', () => {
+  it('never floats or clips while wandering from a real bridge deck (on the deck, its tower lobby, its stairs, or the ground below), across many ticks', () => {
     let bridgesWalked = 0;
 
     for (const seed of SEEDS) {
@@ -44,9 +53,21 @@ describe('pedestrians walking real generated elevated decks', () => {
       for (let i = 0; i < TICKS; i++) {
         stepPedestrian(ped, 1 / 60, grid, rng);
         expect(ped.alive).toBe(true);
-        expect(ped.y).toBe(bridge.level);
-        expect(isElevatedWalkableCell(grid, levelIndex, ped.cellX, ped.cellZ)).toBe(true);
-        expect(world.getBlock(ped.cellX, bridge.level, ped.cellZ)).toBe(METAL);
+
+        if (ped.stair) {
+          const stair = ped.stair as StairCommitment;
+          const cur = stair.link.steps[stair.index] as { y: number };
+          const prev = stair.link.steps[stair.index - stair.direction] as { y: number };
+          expect(ped.y).toBeGreaterThanOrEqual(Math.min(cur.y, prev.y));
+          expect(ped.y).toBeLessThanOrEqual(Math.max(cur.y, prev.y));
+        } else if (ped.y === GROUND_SURFACE_Y) {
+          expect(isSidewalkCell(grid, ped.cellX, ped.cellZ)).toBe(true);
+        } else {
+          const curLevelIndex = grid.elevatedLevels.findIndex((level) => level.y === ped.y);
+          expect(curLevelIndex).toBeGreaterThanOrEqual(0);
+          expect(isElevatedWalkableCell(grid, curLevelIndex, ped.cellX, ped.cellZ)).toBe(true);
+          expect([METAL, CONCRETE]).toContain(world.getBlock(ped.cellX, ped.y, ped.cellZ));
+        }
       }
       bridgesWalked++;
     }

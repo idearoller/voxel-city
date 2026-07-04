@@ -102,22 +102,31 @@ export function createPedestrianAt(cellX: number, cellZ: number, y: number, spee
 }
 
 /**
- * The stair link, if any, whose ground or deck landing is exactly `ped`'s
- * current cell — i.e. a stair `ped` could detour onto right now. Matches by
+ * Every stair link whose ground or deck landing is exactly `ped`'s current
+ * cell — i.e. every stair `ped` could detour onto right now. Matches by
  * `ped.y` first (a ground-level pedestrian can only ever enter at a link's
  * `steps[0]`, an elevated one only at its `steps[last]`) so an elevated
  * walker on a *different* level than a link's own `levelY` never matches it.
+ *
+ * Usually at most one match. A tower with more than one bridge level shares
+ * one continuous stair shaft (see `infrastructure.ts`'s `planStairShafts`),
+ * so its ground landing is the *same* cell for every level's `StairLink` —
+ * more than one real match here is expected in that case, not a bug, which
+ * is why `chooseNextCell` picks among them with `rng` instead of always
+ * taking the first (that would make every climb at that tower head for
+ * whichever level happened to be derived first, every time).
  */
-function findStairEntryAtCurrentCell(ped: Pedestrian, grid: NavGrid): { link: StairLink; direction: 1 | -1 } | null {
+function findStairEntriesAtCurrentCell(ped: Pedestrian, grid: NavGrid): Array<{ link: StairLink; direction: 1 | -1 }> {
+  const entries: Array<{ link: StairLink; direction: 1 | -1 }> = [];
   for (const link of grid.stairLinks) {
     const steps = link.steps;
     const ground = steps[0] as { x: number; y: number; z: number };
     const deck = steps[steps.length - 1] as { x: number; y: number; z: number };
 
-    if (ped.y === grid.groundY && ped.cellX === ground.x && ped.cellZ === ground.z) return { link, direction: 1 };
-    if (ped.y === link.levelY && ped.cellX === deck.x && ped.cellZ === deck.z) return { link, direction: -1 };
+    if (ped.y === grid.groundY && ped.cellX === ground.x && ped.cellZ === ground.z) entries.push({ link, direction: 1 });
+    else if (ped.y === link.levelY && ped.cellX === deck.x && ped.cellZ === deck.z) entries.push({ link, direction: -1 });
   }
-  return null;
+  return entries;
 }
 
 /**
@@ -139,9 +148,10 @@ export function beginStair(ped: Pedestrian, link: StairLink, direction: 1 | -1):
 function chooseNextCell(ped: Pedestrian, grid: NavGrid, rng: Rng): void {
   const candidates = NEIGHBOR_DIRS.filter(([dx, dz]) => isWalkableSurfaceCell(grid, ped.y, ped.cellX + dx, ped.cellZ + dz));
 
-  const stairEntry = findStairEntryAtCurrentCell(ped, grid);
-  if (stairEntry && (candidates.length === 0 || rng.chance(TAKE_STAIRS_CHANCE))) {
-    beginStair(ped, stairEntry.link, stairEntry.direction);
+  const stairEntries = findStairEntriesAtCurrentCell(ped, grid);
+  if (stairEntries.length > 0 && (candidates.length === 0 || rng.chance(TAKE_STAIRS_CHANCE))) {
+    const entry = stairEntries.length === 1 ? (stairEntries[0] as { link: StairLink; direction: 1 | -1 }) : rng.pick(stairEntries);
+    beginStair(ped, entry.link, entry.direction);
     return;
   }
 
