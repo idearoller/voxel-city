@@ -38,8 +38,10 @@ function towerKey(building: BuildingPlan): string {
 // Bridges / skywalks
 // ---------------------------------------------------------------------------
 
-const BRIDGE_MAX_GAP = 40;
-const BRIDGE_CHANCE = 0.25;
+const BRIDGE_MAX_GAP = 48;
+const BRIDGE_CHANCE = 0.35;
+/** Each tower can anchor at most this many bridges (to distinct partners and/or distinct levels), so a busy hub tower doesn't sprout an unreadable tangle of decks. */
+const MAX_BRIDGES_PER_TOWER = 3;
 /** A tower must clear the lowest sky level (plus deck/rail/headroom margin) to be a bridge candidate. */
 const BRIDGE_MIN_TOWER_HEIGHT = 30;
 /**
@@ -53,7 +55,21 @@ const BRIDGE_MIN_TOWER_HEIGHT = 30;
  * the stairs to the bridge door rather than boxing the top step in.
  */
 const BRIDGE_MIN_TOWER_FOOTPRINT = 10;
-const SKY_LEVELS = [30, 60, 90] as const;
+/**
+ * Every 20 voxels rather than 30 (was `[30, 60, 90]`): with `planTiers`'
+ * setback boundary timing (roughly 40-70% of a tower's own height for a
+ * single setback, 40-55% for the first of two), very few real towers still
+ * have a ground-footprint at y=60 by the time they're tall enough to clear
+ * it with margin — measured on real generator output, multi-level stacking
+ * (`pickSkyLevels` returning >1 eligible level for the same pair) occurred
+ * on only ~1% of bridged towers with `[30, 60, 90]`, i.e. the machinery was
+ * real but essentially dormant. A denser ladder gives more towers a second
+ * (or third) level they can still clear before their own setback shrinks
+ * the footprint, without changing anything about how a level is chosen or
+ * how many bridges a tower may anchor (`MAX_BRIDGES_PER_TOWER` still caps
+ * that).
+ */
+const SKY_LEVELS = [30, 50, 70, 90] as const;
 /** Deck (1) + rails (2) + headroom (1) that must fit below the tower's roof at the chosen sky level. */
 const SKY_LEVEL_MARGIN = 4;
 const BRIDGE_DECK_WIDTH = 3;
@@ -71,18 +87,23 @@ export interface Bridge {
 }
 
 /**
- * Buildings with a planned shop interior are excluded: a bridge's internal
- * stair shaft is centered on the tower's footprint (see `stairShaftOrigin`),
- * which can overlap a shop's doorway-adjacent walkway ring exactly the same
- * way an elevator shaft can (see `planElevatorShafts`'s doc comment).
+ * Buildings with a planned shop interior are NOT excluded here (unlike
+ * `planElevatorShafts`, which still excludes them — see that function's doc
+ * comment). A bridge's internal stair shaft is *centered* on the tower's
+ * footprint (see `stairShaftOrigin`): with `BRIDGE_MIN_TOWER_FOOTPRINT` >= 10
+ * and a shop's ring sitting one cell in from the wall, the centered 3x3
+ * shaft always lands inside the shop's core (one more cell in from the
+ * ring), never on the ring itself — the elevator shaft's problem was its
+ * *fixed NW-corner* anchor, which is a different footprint entirely. See
+ * `shopInterior.ts`'s doc comment for the full picture and
+ * `stairShaftFootprintColumns` for the geometry other modules rely on.
  */
 function candidateTowers(buildings: readonly BuildingPlan[]): BuildingPlan[] {
   return buildings.filter(
     (b) =>
       b.height >= BRIDGE_MIN_TOWER_HEIGHT &&
       b.width >= BRIDGE_MIN_TOWER_FOOTPRINT &&
-      b.depth >= BRIDGE_MIN_TOWER_FOOTPRINT &&
-      !b.shopInterior,
+      b.depth >= BRIDGE_MIN_TOWER_FOOTPRINT,
   );
 }
 
@@ -162,13 +183,20 @@ function gapBetween(a: BuildingPlan, b: BuildingPlan): GapInfo | null {
   return null;
 }
 
-/** Picks the highest sky level both towers clear (with margin) at their un-setback-shrunk footprint, or null. */
+/**
+ * Every sky level (ascending) both towers clear, with margin, at their
+ * un-setback-shrunk footprint — not just the highest. A tall enough pair can
+ * host a bridge at each of several levels (subject to `MAX_BRIDGES_PER_TOWER`
+ * and the per-pair/per-level chance roll in `planBridges`), which is what
+ * gives a tall tower pair a stacked, multi-level bridge connection instead of
+ * capping out at one.
+ */
 /** The top step's own row plus the 2 risers below it all need to clear any setback deck above. */
 const STAIR_TOP_HEADROOM_CLEARANCE = 3;
 
-function pickSkyLevel(a: BuildingPlan, b: BuildingPlan): number | null {
+function pickSkyLevels(a: BuildingPlan, b: BuildingPlan): number[] {
   const minTop = Math.min(a.baseY + a.height, b.baseY + b.height);
-  let chosen: number | null = null;
+  const levels: number[] = [];
   for (const level of SKY_LEVELS) {
     if (level + SKY_LEVEL_MARGIN > minTop) continue;
     if (!isGroundFootprintAt(a, level) || !isGroundFootprintAt(b, level)) continue;
@@ -178,9 +206,9 @@ function pickSkyLevel(a: BuildingPlan, b: BuildingPlan): number | null {
     ) {
       continue;
     }
-    chosen = level;
+    levels.push(level);
   }
-  return chosen;
+  return levels;
 }
 
 interface Rect2D {
@@ -220,17 +248,22 @@ function deckBlockedByOtherBuilding(
 
 /**
  * Plans sky bridges: every candidate tower pair within BRIDGE_MAX_GAP whose
- * footprints face each other with enough lateral overlap for a 3-wide deck,
- * and who share a valid sky level, rolls a BRIDGE_CHANCE coin (forked per
- * pair so it's independent of pair iteration order) for a bridge.
+ * footprints face each other with enough lateral overlap for a 3-wide deck
+ * gets one bridge candidate *per* sky level they both clear (see
+ * `pickSkyLevels`), each independently rolling a BRIDGE_CHANCE coin (forked
+ * per pair *and* level, so it's independent of pair/level iteration order).
  *
- * Each tower may host at most one bridge. A second bridge on the same tower
- * would need its own stair shaft, but shafts are keyed by tower position
- * alone (see `planStairShafts`) and always spiral up from the same 3x3
- * origin — a shaft climbing past a lower bridge's level would have to punch
- * through that lower bridge's own sky-lobby floor, which spans the tower's
- * *entire* footprint. One bridge per tower sidesteps that conflict entirely
- * rather than trying to keep two floors and two shafts from overlapping.
+ * A tower may host up to `MAX_BRIDGES_PER_TOWER` bridges total — to distinct
+ * partner towers, at distinct levels, or both. Multiple bridges at
+ * *different* levels on the same tower share one stair shaft: shafts are
+ * keyed by (tower, level) in `planStairShafts`/`planSkyLobbies`, and every
+ * level's shaft spirals up from the exact same 3x3 origin (see
+ * `stairShaftOrigin`), so a higher-level shaft's steps are just a
+ * continuation of a lower-level shaft's steps for the same tower — one
+ * continuous staircase serves every bridge level that tower has, not a
+ * separate climb per level. Multiple bridges at the *same* level on the same
+ * tower (to different neighbors) share one sky-lobby floor the same way,
+ * each carving its own door into its own facing wall.
  *
  * The gap between the two bridge towers is otherwise unchecked ground — a
  * third, unrelated building can sit in it. Its footprint at the bridge's
@@ -239,50 +272,56 @@ function deckBlockedByOtherBuilding(
  */
 export function planBridges(buildings: readonly BuildingPlan[], rng: Rng): Bridge[] {
   const towers = candidateTowers(buildings);
-  const bridgedTowers = new Set<string>();
+  const bridgeCountByTower = new Map<string, number>();
   const bridges: Bridge[] = [];
+
+  const hasCapacity = (tower: BuildingPlan) => (bridgeCountByTower.get(towerKey(tower)) ?? 0) < MAX_BRIDGES_PER_TOWER;
 
   for (let i = 0; i < towers.length; i++) {
     for (let j = i + 1; j < towers.length; j++) {
       const a = towers[i] as BuildingPlan;
       const b = towers[j] as BuildingPlan;
-      if (bridgedTowers.has(towerKey(a)) || bridgedTowers.has(towerKey(b))) continue;
+      if (!hasCapacity(a) || !hasCapacity(b)) continue;
 
       const info = gapBetween(a, b);
       if (!info || info.gap <= 0 || info.gap > BRIDGE_MAX_GAP) continue;
 
-      const level = pickSkyLevel(a, b);
-      if (level === null) continue;
-
-      const pairRng = rng.fork(`${towerKey(a)}-${towerKey(b)}`);
-      if (!pairRng.chance(BRIDGE_CHANCE)) continue;
+      const levels = pickSkyLevels(a, b);
+      if (levels.length === 0) continue;
 
       const laneSpan = info.overlapEnd - info.overlapStart;
       const laneStart = info.overlapStart + Math.floor((laneSpan - BRIDGE_DECK_WIDTH) / 2);
       const [first, second] = info.aFirst ? [a, b] : [b, a];
 
-      const deck =
-        info.axis === 'x'
-          ? {
-              axis: 'x' as const,
-              x: first.x + first.width,
-              z: laneStart,
-              width: second.x - (first.x + first.width),
-              depth: BRIDGE_DECK_WIDTH,
-            }
-          : {
-              axis: 'z' as const,
-              x: laneStart,
-              z: first.z + first.depth,
-              width: BRIDGE_DECK_WIDTH,
-              depth: second.z - (first.z + first.depth),
-            };
+      for (const level of levels) {
+        if (!hasCapacity(a) || !hasCapacity(b)) break;
 
-      if (deckBlockedByOtherBuilding(deck, level, buildings, first, second)) continue;
+        const pairRng = rng.fork(`${towerKey(a)}-${towerKey(b)}-${level}`);
+        if (!pairRng.chance(BRIDGE_CHANCE)) continue;
 
-      bridgedTowers.add(towerKey(a));
-      bridgedTowers.add(towerKey(b));
-      bridges.push({ ...deck, level, towerA: first, towerB: second });
+        const deck =
+          info.axis === 'x'
+            ? {
+                axis: 'x' as const,
+                x: first.x + first.width,
+                z: laneStart,
+                width: second.x - (first.x + first.width),
+                depth: BRIDGE_DECK_WIDTH,
+              }
+            : {
+                axis: 'z' as const,
+                x: laneStart,
+                z: first.z + first.depth,
+                width: BRIDGE_DECK_WIDTH,
+                depth: second.z - (first.z + first.depth),
+              };
+
+        if (deckBlockedByOtherBuilding(deck, level, buildings, first, second)) continue;
+
+        bridgeCountByTower.set(towerKey(a), (bridgeCountByTower.get(towerKey(a)) ?? 0) + 1);
+        bridgeCountByTower.set(towerKey(b), (bridgeCountByTower.get(towerKey(b)) ?? 0) + 1);
+        bridges.push({ ...deck, level, towerA: first, towerB: second });
+      }
     }
   }
 
@@ -376,6 +415,26 @@ function stairShaftOrigin(tower: BuildingPlan): { x: number; z: number } {
   };
 }
 
+/**
+ * The 9 (x, z) columns of a tower's 3x3 stair-shaft footprint, independent of
+ * shaft height. Exposed so callers that need to know *where* a stair shaft
+ * will stand without caring about its vertical extent — chiefly
+ * `CityGenerator`, which uses this to keep a shop interior's furniture
+ * layout from placing anything where the shaft is about to rise (see
+ * `shopInterior.ts`'s `writeShopInterior` `excludeColumns` parameter) — don't
+ * have to duplicate `stairShaftOrigin`'s formula.
+ */
+export function stairShaftFootprintColumns(tower: BuildingPlan): Array<{ x: number; z: number }> {
+  const origin = stairShaftOrigin(tower);
+  const columns: Array<{ x: number; z: number }> = [];
+  for (let dx = 0; dx < 3; dx++) {
+    for (let dz = 0; dz < 3; dz++) {
+      columns.push({ x: origin.x + dx, z: origin.z + dz });
+    }
+  }
+  return columns;
+}
+
 /** Plans one internal spiral stair shaft per (tower, bridge level) pair, deduped so a shared tower gets one shaft per level. */
 export function planStairShafts(bridges: readonly Bridge[]): StairShaft[] {
   const seen = new Set<string>();
@@ -434,18 +493,39 @@ export function writeStairShaft(world: World, shaft: StairShaft): void {
  * bridge level and shrink the footprint there), so the top step, the walk to
  * the door, and the door threshold are all on one continuous, solid floor.
  *
- * The slab leaves open exactly the 1-2 columns the risers *just below* the
- * top step need for their own headroom (their step is at y=level-1 or
- * y=level-2, so their "2 voxels of air above" reaches up to y=level, which a
- * blanket slab would otherwise cap). Earlier this excluded the whole 3x3
- * shaft footprint instead, which was worse: the ring is built so every cell
- * is on the shaft's outer edge, so the top step's *own* grid neighbors are
- * other ring cells — blanket-excluding all of them could wall the top step
- * off from the rest of the floor entirely (observed on narrow-footprint
- * towers, where the shaft leaves no slab margin on one side). Excluding only
- * the two columns that actually need to stay open lets every other ring
- * cell — including the top step's non-predecessor neighbors — get a normal
- * solid floor, so the top step always has a walkable way out.
+ * The slab leaves open exactly the (up to) 3 columns that would otherwise cap
+ * headroom a rider still needs below the top step. This count comes directly
+ * from `PlayerCollision.tryAutoStep`'s real gate, not from "2 voxels of
+ * standing headroom" intuition — the two are different requirements and
+ * conflating them was a real, shipped defect (Sam's Task 4 review): climbing
+ * from feet-row `y` to `y+1` additionally requires row `y+2` clear *at the
+ * departure column* (see `tryAutoStep`'s lifted-box pre-check), one row
+ * higher than the "`y+1` clear" that mere occupancy at row `y` needs. Walking
+ * that back from the top step (feet row `level+1`):
+ *  - the step directly below (feet row `level`) needs row `level+1` clear
+ *    just to stand there — ordinary occupancy, not climbing;
+ *  - the step below that (feet row `level-1`) needs row `level+1` clear as
+ *    its OWN occupancy headroom, i.e. its "2 voxels above" reaches up to
+ *    `level+1`... no clearance of the lobby's own row (`level`) needed yet;
+ *  - restated in terms of the lobby's row `level` specifically: it is
+ *    row-(level) headroom for the step at feet-row `level-1` (ordinary
+ *    occupancy) AND for the step at feet-row `level-2` (ordinary occupancy,
+ *    its "+2" reaches `level`) AND for the *climb* from feet-row `level-2`
+ *    onward (needs row `level` clear at ITS OWN column, i.e. the step at
+ *    feet-row `level-3`'s climb-gate). That's 3 distinct step columns whose
+ *    access depends on row `level` staying open, not 2 — a real generator
+ *    output BFS using the actual `tryAutoStep` (see
+ *    `CityGenerator.test.ts`'s climb-BFS harness) caught every shaft
+ *    failing at exactly the third one when only 2 were kept open. Earlier
+ *    this excluded the whole 3x3 shaft footprint instead, which was worse:
+ *    the ring is built so every cell is on the shaft's outer edge, so the
+ *    top step's *own* grid neighbors are other ring cells —
+ *    blanket-excluding all of them could wall the top step off from the
+ *    rest of the floor entirely (observed on narrow-footprint towers, where
+ *    the shaft leaves no slab margin on one side). Excluding only the
+ *    columns that actually need to stay open lets every other ring cell —
+ *    including the top step's non-predecessor neighbors — get a normal
+ *    solid floor, so the top step always has a walkable way out.
  */
 export interface SkyLobby {
   x: number;
@@ -453,7 +533,7 @@ export interface SkyLobby {
   width: number;
   depth: number;
   y: number;
-  /** Absolute (x, z) columns to leave uncovered at y — headroom for the riser(s) just below the top step. */
+  /** Absolute (x, z) columns to leave uncovered at y — occupancy/climb headroom for the risers just below the top step (see `planSkyLobbies`'s doc comment for why this is up to 3 columns). */
   openColumns: ReadonlyArray<{ x: number; z: number }>;
 }
 
@@ -474,9 +554,11 @@ export function planSkyLobbies(bridges: readonly Bridge[]): SkyLobby[] {
       const steps = planStairSteps(shaft);
 
       // The last entry is the top step itself (its own cell is written by
-      // writeStairShaft, not the slab); the up-to-2 entries before it are
-      // the risers whose headroom this slab would otherwise cap.
-      const openColumns = steps.slice(Math.max(0, steps.length - 3), steps.length - 1).map((s) => ({ x: s.x, z: s.z }));
+      // writeStairShaft, not the slab — it must stay solid, it's the floor);
+      // the up-to-3 entries before it are the steps whose occupancy-or-climb
+      // headroom this slab would otherwise cap (see this function's doc
+      // comment for exactly why it's 3, not 2).
+      const openColumns = steps.slice(Math.max(0, steps.length - 4), steps.length - 1).map((s) => ({ x: s.x, z: s.z }));
 
       lobbies.push({ x: tier.x, z: tier.z, width: tier.width, depth: tier.depth, y: bridge.level, openColumns });
     }
@@ -702,11 +784,13 @@ export interface ElevatorShaftMarker {
 /**
  * Rolls an empty 3x3-walled shaft for some tall towers. Skips towers that
  * already got a real stair shaft so the two never overlap, and skips any
- * building with a planned shop interior (see `shopInterior.ts`) — the
- * shaft's fixed NW-corner footprint can land squarely on that room's
- * doorway-adjacent walkway ring, sealing it off, and a shop's whole ground
- * floor is meant to be one open retail room rather than sharing it with a
- * vertical core.
+ * building with a planned shop interior (see `shopInterior.ts`) — unlike a
+ * bridge's *centered* stair shaft (see `candidateTowers`, which no longer
+ * excludes shops for exactly this reason), this shaft's footprint is anchored
+ * to the tower's fixed NW interior corner, which can land squarely on that
+ * room's doorway-adjacent walkway ring, sealing it off, and a shop's whole
+ * ground floor is meant to be one open retail room rather than sharing it
+ * with a vertical core.
  */
 export function planElevatorShafts(
   buildings: readonly BuildingPlan[],

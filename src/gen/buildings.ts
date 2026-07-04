@@ -488,14 +488,21 @@ function writeAntenna(world: World, plan: BuildingPlan): void {
 }
 
 /** Fills in the ground-floor room behind the doorway, if this building planned one (see `shopInterior.ts`). */
-function writeShopInteriorIfPlanned(world: World, plan: BuildingPlan): void {
+function writeShopInteriorIfPlanned(world: World, plan: BuildingPlan, shaftColumns?: ReadonlySet<string>): void {
   if (!plan.shopInterior) return;
   const tier0 = plan.tiers[0] as BuildingTier;
-  writeShopInterior(world, plan.baseY, tier0, plan.shopInterior);
+  writeShopInterior(world, plan.baseY, tier0, plan.shopInterior, shaftColumns);
 }
 
-/** Extrudes a planned building into the world via setBlockRaw only (no dirty events). */
-export function writeBuilding(world: World, plan: BuildingPlan): void {
+/**
+ * Extrudes a planned building into the world via setBlockRaw only (no dirty
+ * events). `shaftColumns` — the (x, z) footprint of a bridge stair shaft this
+ * tower will get, if any (see `infrastructure.ts`'s
+ * `stairShaftFootprintColumns`) — is only relevant for buildings with a shop
+ * interior and is passed straight through to `writeShopInterior` so its
+ * furniture layout can skip those cells; every other write path ignores it.
+ */
+export function writeBuilding(world: World, plan: BuildingPlan, shaftColumns?: ReadonlySet<string>): void {
   writeShellAndWindows(world, plan);
   writeSetbackDecks(world, plan);
   writeShopBand(world, plan);
@@ -506,7 +513,7 @@ export function writeBuilding(world: World, plan: BuildingPlan): void {
   writeDoorway(world, plan);
   // Interior furnishing runs after the doorway carve so it can never be
   // re-solidified by it, and only touches cells strictly inside the shell.
-  writeShopInteriorIfPlanned(world, plan);
+  writeShopInteriorIfPlanned(world, plan, shaftColumns);
   writeRoof(world, plan);
   writeAntenna(world, plan);
 }

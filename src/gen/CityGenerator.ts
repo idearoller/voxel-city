@@ -18,6 +18,7 @@ import {
   planStairShafts,
   planStreetlights,
   planWalkways,
+  stairShaftFootprintColumns,
   towerKey,
   writeBillboard,
   writeBridge,
@@ -59,19 +60,51 @@ function paintGround(world: World, layout: CityLayout): void {
   }
 }
 
-/** Extrudes every non-park parcel's building and returns the plans, so later stages (bridges, billboards) can query tower geometry. */
-function placeBuildings(world: World, layout: CityLayout, buildingsRng: Rng): BuildingPlan[] {
+/**
+ * Plans (but does not write) every non-park parcel's building. Split from
+ * writing so bridges/stair shafts can be planned from the resulting
+ * `BuildingPlan[]` — a pure computation — *before* any building is written:
+ * a shop-interior building's furniture layout needs to know its stair
+ * shaft's footprint (if it gets one) to avoid placing furniture there (see
+ * `writeAllBuildings`), and that footprint isn't knowable until the
+ * whole-city bridge plan exists.
+ */
+function planAllBuildings(layout: CityLayout, buildingsRng: Rng): BuildingPlan[] {
   const plans: BuildingPlan[] = [];
   for (const block of layout.blocks) {
     for (const parcel of block.parcels) {
       const parcelRng = buildingsRng.fork(`${parcel.x},${parcel.z}`);
       const plan = planBuilding(parcel, parcelRng, layout, BUILDING_BASE_Y, block.district);
-      if (!plan) continue;
-      writeBuilding(world, plan);
-      plans.push(plan);
+      if (plan) plans.push(plan);
     }
   }
   return plans;
+}
+
+/**
+ * The stair-shaft footprint (as a `"x,z"` column set) for every planned
+ * building that both has a shop interior and will end up with a bridge stair
+ * shaft — i.e. the exact set `writeAllBuildings` needs to keep shop furniture
+ * off of. Buildings with no shop interior, or a shop interior but no shaft,
+ * are simply absent from the map (callers should treat a missing entry the
+ * same as an empty exclusion set).
+ */
+function shopShaftColumnsByTower(buildings: readonly BuildingPlan[], bridges: readonly Bridge[]): Map<string, ReadonlySet<string>> {
+  const stairTowerKeys = new Set(bridges.flatMap((bridge) => [towerKey(bridge.towerA), towerKey(bridge.towerB)]));
+  const map = new Map<string, ReadonlySet<string>>();
+  for (const building of buildings) {
+    if (!building.shopInterior) continue;
+    if (!stairTowerKeys.has(towerKey(building))) continue;
+    map.set(towerKey(building), new Set(stairShaftFootprintColumns(building).map((c) => `${c.x},${c.z}`)));
+  }
+  return map;
+}
+
+/** Writes every planned building, passing each shop building its stair shaft's footprint (if any) so furniture placement can dodge it. */
+function writeAllBuildings(world: World, buildings: readonly BuildingPlan[], shaftColumnsByTower: ReadonlyMap<string, ReadonlySet<string>>): void {
+  for (const plan of buildings) {
+    writeBuilding(world, plan, shaftColumnsByTower.get(towerKey(plan)));
+  }
 }
 
 /** Bridges between nearby towers, the internal stair shafts that reach them, elevated walkways, and elevator-shaft markers. */
@@ -79,9 +112,9 @@ function placeVerticalInfrastructure(
   world: World,
   layout: CityLayout,
   buildings: BuildingPlan[],
+  bridges: readonly Bridge[],
   rng: Rng,
-): { bridges: Bridge[]; stairShafts: StairShaft[]; walkways: Walkway[] } {
-  const bridges = planBridges(buildings, rng.fork('bridges'));
+): { stairShafts: StairShaft[]; walkways: Walkway[] } {
   for (const bridge of bridges) writeBridge(world, bridge);
 
   const stairShafts = planStairShafts(bridges);
@@ -103,7 +136,7 @@ function placeVerticalInfrastructure(
   const walkways = planWalkways(layout, BUILDING_BASE_Y);
   for (const walkway of walkways) writeWalkway(world, walkway);
 
-  return { bridges, stairShafts, walkways };
+  return { stairShafts, walkways };
 }
 
 /** Streetlights at road intersections and scattered neon billboards on blank facades. */
@@ -115,11 +148,30 @@ function placeStreetFurniture(world: World, layout: CityLayout, buildings: Build
   for (const billboard of billboards) writeBillboard(world, billboard);
 }
 
+/**
+ * Every (x, z) column a walkway's deck or staircase occupies, citywide — see
+ * `parks.ts`'s `planPark` doc comment for why this exists: parks are written
+ * *after* walkways (this function's own caller order), so nothing otherwise
+ * stops a tree from being planted directly in a staircase's path.
+ */
+function walkwayObstacleColumns(walkways: readonly Walkway[]): Set<string> {
+  const columns = new Set<string>();
+  for (const walkway of walkways) {
+    for (let dx = 0; dx < walkway.width; dx++) {
+      for (let dz = 0; dz < walkway.depth; dz++) {
+        columns.add(`${walkway.x + dx},${walkway.z + dz}`);
+      }
+    }
+    for (const step of walkway.stairSteps) columns.add(`${step.x},${step.z}`);
+  }
+  return columns;
+}
+
 /** Grass, gravel paths, trees, and lamps for every PARK-district block. */
-function placeParks(world: World, layout: CityLayout, rng: Rng): void {
+function placeParks(world: World, layout: CityLayout, rng: Rng, obstacleColumns: ReadonlySet<string>): void {
   for (const block of layout.blocks) {
     if (block.district !== District.PARK) continue;
-    const plan = planPark(block, rng.fork(`${block.x},${block.z}`));
+    const plan = planPark(block, rng.fork(`${block.x},${block.z}`), obstacleColumns);
     writePark(world, block, plan, GROUND_SURFACE_Y);
   }
 }
@@ -138,19 +190,26 @@ export function generateCity(world: World, seed: string): GenerationResult {
   const layout = planLayout(rootRng.fork('layout'));
 
   paintGround(world, layout);
-  const buildings = placeBuildings(world, layout, rootRng.fork('buildings'));
+  const buildings = planAllBuildings(layout, rootRng.fork('buildings'));
+
+  // Bridges are planned (pure — no world writes) before any building is
+  // written: a shop-interior building's furniture layout needs to know
+  // whether it's getting a stair shaft, and where, to dodge that footprint
+  // (see `shopShaftColumnsByTower`). `infrastructureRng` is threaded through
+  // to `placeVerticalInfrastructure` below so every fork key under
+  // 'infrastructure' (bridges, elevators) is drawn from exactly the same
+  // sub-stream it always was, regardless of when the plan is computed.
+  const infrastructureRng = rootRng.fork('infrastructure');
+  const bridges = planBridges(buildings, infrastructureRng.fork('bridges'));
+  writeAllBuildings(world, buildings, shopShaftColumnsByTower(buildings, bridges));
+
   // Street furniture (billboards in particular) paints directly onto building
   // facades, so it must run *before* the bridge stage: a bridge's door carve
   // has to be the last write to its own threshold cells, or a billboard that
   // happens to land there re-solidifies the opening and boxes the stairs in.
   placeStreetFurniture(world, layout, buildings, rootRng.fork('furniture'));
-  const { bridges, stairShafts, walkways } = placeVerticalInfrastructure(
-    world,
-    layout,
-    buildings,
-    rootRng.fork('infrastructure'),
-  );
-  placeParks(world, layout, rootRng.fork('parks'));
+  const { stairShafts, walkways } = placeVerticalInfrastructure(world, layout, buildings, bridges, infrastructureRng);
+  placeParks(world, layout, rootRng.fork('parks'), walkwayObstacleColumns(walkways));
 
   world.remeshAll();
 

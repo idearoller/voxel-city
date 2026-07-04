@@ -32,6 +32,19 @@ const SIDEWALK_INSET = 1;
 const MIN_PARCEL_SIZE = 8;
 const MIN_PARCELS_PER_BLOCK = 2;
 const MAX_PARCELS_PER_BLOCK = 6;
+/**
+ * Minimum voxel gap left between two sibling parcels produced by the same
+ * BSP split (a mini sidewalk between neighboring buildings). Without this, a
+ * real-generator-output climb BFS (`CityGenerator.test.ts`) caught two
+ * adjacent buildings whose walls touched with zero gap, and whose doorways
+ * happened to roll onto exactly that shared wall — a door opening directly
+ * into a solid neighboring wall, unusable in real gameplay no matter how
+ * good the interior/stairs/bridges beyond it are. `planBuilding`'s own
+ * per-building inset (0-2 voxels, independent per building) only
+ * *sometimes* left a gap; this makes one mandatory regardless of how either
+ * building's inset happens to roll.
+ */
+const PARCEL_GAP = 1;
 
 export interface Span {
   /** Inclusive start coordinate. */
@@ -119,12 +132,20 @@ function fillRoadBand(cells: Uint8Array, gridSizeX: number, gridSizeZ: number, s
   }
 }
 
-/** Recursively BSP-splits a rect into 2-6 leaf parcels, each axis >= MIN_PARCEL_SIZE. */
+/**
+ * Recursively BSP-splits a rect into 2-6 leaf parcels, each axis >=
+ * MIN_PARCEL_SIZE, always leaving PARCEL_GAP voxels of clearance between the
+ * two children of every split (see PARCEL_GAP's doc comment for why). That
+ * gap is preserved transitively through further recursive splits of either
+ * child: each child's own rect is a geometric subset of its post-split span,
+ * so a gap established at any split remains between every pair of
+ * descendant leaf parcels on either side of it.
+ */
 function splitIntoParcels(rect: Span2D, rng: Rng, targetCount: number): Span2D[] {
   const rects: Span2D[] = [rect];
 
   const canSplit = (r: Span2D): boolean =>
-    Math.max(r.width, r.depth) >= MIN_PARCEL_SIZE * 2;
+    Math.max(r.width, r.depth) >= MIN_PARCEL_SIZE * 2 + PARCEL_GAP;
 
   while (rects.length < targetCount) {
     const splittableIndex = rects.findIndex(canSplit);
@@ -133,14 +154,14 @@ function splitIntoParcels(rect: Span2D, rng: Rng, targetCount: number): Span2D[]
     const target = rects[splittableIndex] as Span2D;
     const splitOnX = target.width >= target.depth;
     const length = splitOnX ? target.width : target.depth;
-    const cut = rng.intRange(MIN_PARCEL_SIZE, length - MIN_PARCEL_SIZE);
+    const cut = rng.intRange(MIN_PARCEL_SIZE, length - MIN_PARCEL_SIZE - PARCEL_GAP);
 
     const a: Span2D = splitOnX
       ? { x: target.x, z: target.z, width: cut, depth: target.depth }
       : { x: target.x, z: target.z, width: target.width, depth: cut };
     const b: Span2D = splitOnX
-      ? { x: target.x + cut, z: target.z, width: target.width - cut, depth: target.depth }
-      : { x: target.x, z: target.z + cut, width: target.width, depth: target.depth - cut };
+      ? { x: target.x + cut + PARCEL_GAP, z: target.z, width: target.width - cut - PARCEL_GAP, depth: target.depth }
+      : { x: target.x, z: target.z + cut + PARCEL_GAP, width: target.width, depth: target.depth - cut - PARCEL_GAP };
 
     rects.splice(splittableIndex, 1, a, b);
   }

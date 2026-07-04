@@ -81,7 +81,7 @@ describe('planBridges', () => {
 
       expect(bridge.axis).toBe('x');
       expect(bridge.depth).toBe(3); // 3-wide deck across the (secondary) z axis
-      expect([30, 60, 90]).toContain(bridge.level);
+      expect([30, 50, 70, 90]).toContain(bridge.level);
       expect(bridge.x).toBe(towerA.x + towerA.width); // starts exactly at towerA's facing wall
       expect(bridge.x + bridge.width).toBe(towerB.x); // ends exactly at towerB's facing wall
       expect(bridge.towerA.x).toBe(towerA.x);
@@ -115,6 +115,59 @@ describe('planBridges', () => {
       const bridges = planBridges([towerA, towerB], createRng(`short-${i}`));
       expect(bridges).toHaveLength(0);
     }
+  });
+
+  /** Minimal valid shop-interior plan for a tower's tier0 — planBridges only checks truthiness, not shape. */
+  function shopPlan(tier0: { x: number; z: number; width: number; depth: number }): NonNullable<BuildingPlan['shopInterior']> {
+    return {
+      archetype: 'convenience',
+      neonColor: NEON_CYAN,
+      doorSide: 'south',
+      interior: { x0: tier0.x + 1, z0: tier0.z + 1, x1: tier0.x + tier0.width - 2, z1: tier0.z + tier0.depth - 2 },
+      core: { x0: tier0.x + 2, z0: tier0.z + 2, x1: tier0.x + tier0.width - 3, z1: tier0.z + tier0.depth - 3 },
+    };
+  }
+
+  it('connects towers even when both have a planned shop interior (Task 4: only the elevator shaft excludes shops, not the bridge stair shaft)', () => {
+    const towerA = tower({ x: 0, z: 0, width: 10, depth: 10, height: 60, shopInterior: shopPlan({ x: 0, z: 0, width: 10, depth: 10 }) });
+    const towerB = tower({ x: 20, z: 0, width: 10, depth: 10, height: 60, shopInterior: shopPlan({ x: 20, z: 0, width: 10, depth: 10 }) });
+
+    let found = false;
+    for (let i = 0; i < 100 && !found; i++) {
+      const bridges = planBridges([towerA, towerB], createRng(`shop-bridge-${i}`));
+      if (bridges.length > 0) found = true;
+    }
+    expect(found).toBe(true);
+  });
+
+  it('never lets any single tower anchor more than MAX_BRIDGES_PER_TOWER (3) bridges, even in a dense cluster', () => {
+    // A central hub tower surrounded by four short-gap partners on every side
+    // it can face: plenty of opportunity to over-connect if the cap were missing.
+    const hub = tower({ x: 40, z: 40, width: 12, depth: 12, height: 100 });
+    const north = tower({ x: 40, z: 10, width: 12, depth: 12, height: 100 });
+    const south = tower({ x: 40, z: 70, width: 12, depth: 12, height: 100 });
+    const east = tower({ x: 70, z: 40, width: 12, depth: 12, height: 100 });
+    const west = tower({ x: 10, z: 40, width: 12, depth: 12, height: 100 });
+    const buildings = [hub, north, south, east, west];
+
+    for (let i = 0; i < 30; i++) {
+      const bridges = planBridges(buildings, createRng(`cluster-${i}`));
+      const hubCount = bridges.filter((b) => b.towerA === hub || b.towerB === hub).length;
+      expect(hubCount).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it('can pick more than one sky level for a single very tall pair, stacking multiple bridges between the same two towers', () => {
+    const towerA = tower({ x: 0, z: 0, width: 12, depth: 12, height: 120 });
+    const towerB = tower({ x: 20, z: 0, width: 12, depth: 12, height: 120 });
+
+    let sawMultiLevelPair = false;
+    for (let i = 0; i < 300 && !sawMultiLevelPair; i++) {
+      const bridges = planBridges([towerA, towerB], createRng(`stack-${i}`));
+      const levels = new Set(bridges.map((b) => b.level));
+      if (bridges.length >= 2 && levels.size >= 2) sawMultiLevelPair = true;
+    }
+    expect(sawMultiLevelPair).toBe(true);
   });
 });
 
@@ -250,7 +303,7 @@ describe('sky lobbies (the floor a bridge tower needs at its own level)', () => 
     expect(world.isSolid(bridge.x + bridge.width, bridge.level, bridge.z + 1)).toBe(true);
   });
 
-  it("covers the tower's full footprint at that level, except the 1-2 headroom columns for the risers just below the top step", () => {
+  it("covers the tower's full footprint at that level, except the (up to 3) headroom/climb columns for the risers just below the top step", () => {
     const towerA = tower({ x: 0, z: 0, width: 10, depth: 10, height: 60 });
     const towerB = tower({ x: 20, z: 0, width: 10, depth: 10, height: 60 });
     const bridge = findBridgeFor(towerA, towerB);
@@ -263,9 +316,13 @@ describe('sky lobbies (the floor a bridge tower needs at its own level)', () => 
       const tier0 = t.tiers[0]!;
       const lobby = lobbies.find((l) => l.x === tier0.x && l.z === tier0.z);
       expect(lobby).toBeDefined();
-      // Exactly the risers within 2 steps of the top need to stay open (fewer only for a very short shaft).
+      // Exactly the risers whose occupancy-or-climb headroom depends on this
+      // row need to stay open — up to 3 (fewer only for a very short shaft).
+      // See `planSkyLobbies`'s doc comment for why it's 3, not 2 (Sam's Task
+      // 4 rejection: real `tryAutoStep` needs headroom one row higher than
+      // plain occupancy does).
       expect(lobby!.openColumns.length).toBeGreaterThan(0);
-      expect(lobby!.openColumns.length).toBeLessThanOrEqual(2);
+      expect(lobby!.openColumns.length).toBeLessThanOrEqual(3);
 
       const openSet = new Set(lobby!.openColumns.map((c) => `${c.x},${c.z}`));
       for (let dx = 0; dx < tier0.width; dx++) {
@@ -467,6 +524,27 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     const stairKeys = new Set([towerKey(withStairs)]);
     for (let i = 0; i < 30; i++) {
       const markers = planElevatorShafts([withStairs], createRng(`elevator-skip-${i}`), stairKeys);
+      expect(markers).toHaveLength(0);
+    }
+  });
+
+  it('still skips a tower with a planned shop interior even though bridges no longer exclude it (Task 4: only the elevator shaft is shop-excluded)', () => {
+    const withShop = tower({
+      x: 0,
+      z: 0,
+      width: 12,
+      depth: 12,
+      height: 60,
+      shopInterior: {
+        archetype: 'convenience',
+        neonColor: NEON_CYAN,
+        doorSide: 'south',
+        interior: { x0: 1, z0: 1, x1: 10, z1: 10 },
+        core: { x0: 2, z0: 2, x1: 9, z1: 9 },
+      },
+    });
+    for (let i = 0; i < 30; i++) {
+      const markers = planElevatorShafts([withShop], createRng(`elevator-shop-skip-${i}`), new Set());
       expect(markers).toHaveLength(0);
     }
   });

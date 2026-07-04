@@ -128,6 +128,45 @@ describe('planLayout parcels', () => {
       }
     }
   });
+
+  /**
+   * A real-generator-output climb BFS (`CityGenerator.test.ts`) caught two
+   * sibling parcels whose buildings' walls touched with zero gap between
+   * them — with both buildings independently rolling a 0-voxel footprint
+   * inset (see `buildings.ts`'s `planBuilding`), one building's doorway
+   * opened directly into its neighbor's solid wall, unusable no matter how
+   * good the geometry beyond it was. This asserts the structural fix: a
+   * mandatory gap between every pair of sibling parcels, independent of
+   * either building's own inset roll.
+   */
+  it('leaves at least a 1-voxel gap between every pair of sibling parcels in a block, across seeds', () => {
+    let checkedAnyMultiParcelBlock = false;
+
+    for (const seed of ['gap-check-1', 'gap-check-2', 'gap-check-3', 'gap-check-4', 'gap-check-5']) {
+      const layout = layoutFor(seed);
+      for (const block of layout.blocks) {
+        if (block.parcels.length < 2) continue;
+        checkedAnyMultiParcelBlock = true;
+
+        for (const a of block.parcels) {
+          for (const b of block.parcels) {
+            if (a === b) continue;
+            const xOverlap = a.x < b.x + b.width && a.x + a.width > b.x;
+            const zOverlap = a.z < b.z + b.depth && a.z + a.depth > b.z;
+            if (!xOverlap && !zOverlap) continue; // far apart on both axes, nothing to check here
+
+            const xGap = a.x >= b.x + b.width ? a.x - (b.x + b.width) : b.x >= a.x + a.width ? b.x - (a.x + a.width) : 0;
+            const zGap = a.z >= b.z + b.depth ? a.z - (b.z + b.depth) : b.z >= a.z + a.depth ? b.z - (a.z + a.depth) : 0;
+            // Sibling rects from a BSP split differ on exactly one axis; the
+            // gap lives on whichever axis actually separates them.
+            expect(Math.max(xGap, zGap)).toBeGreaterThanOrEqual(1);
+          }
+        }
+      }
+    }
+
+    expect(checkedAnyMultiParcelBlock).toBe(true);
+  });
 });
 
 describe('planLayout districts', () => {

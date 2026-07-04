@@ -3,6 +3,7 @@ import type { BuildingPlan, BuildingTier, DoorSide } from '../src/gen/buildings'
 import { planBuilding, writeBuilding } from '../src/gen/buildings';
 import { generateCity } from '../src/gen/CityGenerator';
 import { District } from '../src/gen/districts';
+import { stairShaftFootprintColumns } from '../src/gen/infrastructure';
 import { CellType, type CityLayout, type Parcel } from '../src/gen/layout';
 import { createRng } from '../src/gen/rng';
 import { planShopInterior, SHOP_ARCHETYPES, type ShopArchetype } from '../src/gen/shopInterior';
@@ -259,17 +260,18 @@ describe('shop interiors on real generator output', () => {
     }
   });
 
-  it('never coexists with a real elevator or stair shaft in the same building', () => {
+  it('never coexists with a real elevator shaft in the same building', () => {
     // A shop's whole ground floor is meant to be one open room; buildings
-    // with a shopInterior plan are excluded from shaft candidacy entirely
-    // (see infrastructure.ts's candidateTowers / planElevatorShafts) rather
-    // than having furniture dodge a shaft's fixed footprint, because the
+    // with a shopInterior plan are excluded from *elevator*-shaft candidacy
+    // entirely (see infrastructure.ts's `planElevatorShafts`) rather than
+    // having furniture dodge that shaft's fixed footprint, because the
     // shaft's wall blocks would otherwise land on the walkway ring itself
     // (a real defect this suite caught on real generator output for west-
-    // and south-facing doors — see this file's git history).
+    // and south-facing doors — see this file's git history). Bridge stair
+    // shafts are handled differently — see the next two tests.
     let checkedAnyShaft = false;
 
-    for (const { world, buildings, stairShafts } of worlds) {
+    for (const { world, buildings } of worlds) {
       const shopFootprints = buildings
         .filter((b) => b.shopInterior)
         .map((b) => ({ x0: b.x, z0: b.z, x1: b.x + b.width - 1, z1: b.z + b.depth - 1 }));
@@ -277,19 +279,79 @@ describe('shop interiors on real generator output', () => {
       const overlapsAnyShop = (x: number, z: number) =>
         shopFootprints.some((f) => x >= f.x0 && x <= f.x1 && z >= f.z0 && z <= f.z1);
 
-      for (const shaft of stairShafts) {
-        checkedAnyShaft = true;
-        expect(overlapsAnyShop(shaft.originX, shaft.originZ)).toBe(false);
-      }
       for (const shaft of scanElevatorShafts(world)) {
         checkedAnyShaft = true;
         expect(overlapsAnyShop(shaft.wellX, shaft.wellZ)).toBe(false);
       }
     }
 
-    // Not every seed batch is guaranteed to roll a shaft; this just proves the
-    // check has real teeth on this seed batch rather than vacuously passing.
+    // Not every seed batch is guaranteed to roll an elevator shaft; this just
+    // proves the check has real teeth on this seed batch rather than
+    // vacuously passing.
     expect(checkedAnyShaft).toBe(true);
+  });
+
+  it('when a shop building also gets a bridge stair shaft, the shaft footprint stays strictly inside the core, never on the ring', () => {
+    // Task 4 (denser bridges): unlike the elevator shaft above, a bridge's
+    // internal stair shaft is centered on the tower footprint (see
+    // infrastructure.ts's `stairShaftOrigin`) rather than anchored to a fixed
+    // corner, so shop buildings are no longer excluded from stair/bridge
+    // candidacy. `BRIDGE_MIN_TOWER_FOOTPRINT` (>= 10) guarantees the centered
+    // 3x3 shaft lands inside the core (one cell past the ring the doorway
+    // depends on) — this asserts that invariant on real generator output.
+    let checkedAnyShopStair = false;
+
+    for (const { buildings, stairShafts } of worlds) {
+      for (const building of buildings) {
+        if (!building.shopInterior) continue;
+
+        const columns = stairShaftFootprintColumns(building);
+        const origin = columns[0]!;
+        const shaft = stairShafts.find(
+          (s) => s.originX === origin.x && s.originZ === origin.z && s.baseY === building.baseY,
+        );
+        if (!shaft) continue;
+        checkedAnyShopStair = true;
+
+        const interior = building.shopInterior.interior;
+        for (const { x, z } of columns) {
+          expect(x).toBeGreaterThan(interior.x0);
+          expect(x).toBeLessThan(interior.x1);
+          expect(z).toBeGreaterThan(interior.z0);
+          expect(z).toBeLessThan(interior.z1);
+        }
+      }
+    }
+
+    // Not every seed batch pairs a shop building with a qualifying bridge;
+    // this proves the check has real teeth on this seed batch.
+    expect(checkedAnyShopStair).toBe(true);
+  });
+
+  it('skips furniture at every cell a coexisting stair shaft occupies, so the shaft never carves through a shelf/counter block', () => {
+    let checkedAnyShopStair = false;
+
+    for (const { world, buildings, stairShafts } of worlds) {
+      for (const building of buildings) {
+        if (!building.shopInterior) continue;
+
+        const columns = stairShaftFootprintColumns(building);
+        const origin = columns[0]!;
+        const shaft = stairShafts.find(
+          (s) => s.originX === origin.x && s.originZ === origin.z && s.baseY === building.baseY,
+        );
+        if (!shaft) continue;
+        checkedAnyShopStair = true;
+
+        for (const { x, z } of columns) {
+          const block = world.getBlock(x, building.baseY, z);
+          expect(block).not.toBe(SHOP_SHELF);
+          expect(block).not.toBe(SHOP_COUNTER);
+        }
+      }
+    }
+
+    expect(checkedAnyShopStair).toBe(true);
   });
 
   it('is deterministic per seed: same seed reproduces the same archetype/color for every shop building', () => {

@@ -14,14 +14,25 @@
  * can never sever that loop; at worst it fills the entire core and the room
  * degrades to a walkable ring with no core floor space, never a dead end.
  *
- * A building with a planned shop interior is also excluded from stair-shaft
- * and elevator-shaft candidacy entirely (see `infrastructure.ts`'s
- * `candidateTowers` / `planElevatorShafts`) rather than trying to route a
- * shaft's fixed footprint around a room laid out independently: both shaft
- * kinds anchor to the tower's own NW interior corner regardless of where the
- * doorway sits, so a shop with a west or south door would otherwise have its
- * walkway ring overwritten by shaft-wall blocks written after this module
- * runs — a real defect this module's own generator-output tests caught.
+ * A building with a planned shop interior is excluded from *elevator*-shaft
+ * candidacy entirely (see `infrastructure.ts`'s `planElevatorShafts`) rather
+ * than trying to route that shaft's fixed footprint around a room laid out
+ * independently: the elevator shaft anchors to the tower's own NW interior
+ * corner regardless of where the doorway sits, so a shop with a west or south
+ * door would otherwise have its walkway ring overwritten by shaft-wall blocks
+ * written after this module runs — a real defect this module's own
+ * generator-output tests caught.
+ *
+ * A bridge's internal *stair* shaft is different: it's centered on the
+ * tower's footprint (see `infrastructure.ts`'s `stairShaftOrigin`), which —
+ * given `BRIDGE_MIN_TOWER_FOOTPRINT` >= 10 — always lands inside this
+ * module's "core" (one cell in from the ring), never on the ring itself. So
+ * shop buildings are NOT excluded from stair-shaft/bridge candidacy. What a
+ * centered shaft *can* do is land on furniture: `writeShopInterior` accepts
+ * an optional `excludeColumns` set (the shaft's footprint, computed by
+ * `infrastructure.ts`'s `stairShaftFootprintColumns`) so furniture placement
+ * skips those cells gracefully instead of writing shelves/counters that the
+ * shaft would just overwrite moments later.
  *
  * Kept separate from `buildings.ts` (which already re-exports the pieces
  * `planBuilding`/`writeBuilding` need) so the room-layout logic is
@@ -119,13 +130,29 @@ function roomAxes(doorSide: DoorSide): { tangentAxis: 'x' | 'z'; depthAxis: 'x' 
   }
 }
 
-/** Writes a solid floor-level furniture block at (x, z, baseY), unless the cell falls outside `core`. */
-function placeFurnitureCell(world: World, baseY: number, core: Rect, interior: Rect, x: number, z: number, block: number): void {
+/**
+ * Writes a solid floor-level furniture block at (x, z, baseY), unless the
+ * cell falls outside `core`, on the ring, or in `excludeColumns` — the
+ * footprint of a stair shaft this same building will get later (see this
+ * file's doc comment). Skipping those cells here avoids planting furniture
+ * that a subsequent shaft write would just carve straight through.
+ */
+function placeFurnitureCell(
+  world: World,
+  baseY: number,
+  core: Rect,
+  interior: Rect,
+  x: number,
+  z: number,
+  block: number,
+  excludeColumns?: ReadonlySet<string>,
+): void {
   if (!rectContains(core, x, z)) return;
   // Defense in depth: `core` is derived from `interior` shrunk by one, so this
   // should be unreachable, but a future archetype miscomputing its own
   // (x, z) must never be able to solidify the ring the doorway depends on.
   if (isRingCell(interior, x, z)) return;
+  if (excludeColumns?.has(`${x},${z}`)) return;
   world.setBlockRaw(x, baseY, z, block);
 }
 
@@ -143,6 +170,7 @@ function writeShelfAisles(
   axes: ReturnType<typeof roomAxes>,
   neonColor: number,
   skipNearRow: boolean,
+  excludeColumns?: ReadonlySet<string>,
 ): void {
   const tRange = axes.tangentAxis === 'x' ? [core.x0, core.x1] : [core.z0, core.z1];
   const dRange = axes.depthAxis === 'x' ? [core.x0, core.x1] : [core.z0, core.z1];
@@ -158,13 +186,13 @@ function writeShelfAisles(
       if (skipNearRow && d === dNear) continue;
       const x = axes.tangentAxis === 'x' ? t : d;
       const z = axes.tangentAxis === 'x' ? d : t;
-      placeFurnitureCell(world, baseY, core, interior, x, z, SHOP_SHELF);
+      placeFurnitureCell(world, baseY, core, interior, x, z, SHOP_SHELF, excludeColumns);
     }
 
     const accentX = axes.tangentAxis === 'x' ? t : dFar;
     const accentZ = axes.tangentAxis === 'x' ? dFar : t;
     if (!skipNearRow || dFar !== dNear) {
-      placeFurnitureCell(world, baseY, core, interior, accentX, accentZ, neonColor);
+      placeFurnitureCell(world, baseY, core, interior, accentX, accentZ, neonColor, excludeColumns);
     }
   }
 }
@@ -182,6 +210,7 @@ function writeCounter(
   axes: ReturnType<typeof roomAxes>,
   neonColor: number,
   depthPosition: 'mid' | 'far',
+  excludeColumns?: ReadonlySet<string>,
 ): void {
   const tRange = axes.tangentAxis === 'x' ? [core.x0, core.x1] : [core.z0, core.z1];
   const dRange = axes.depthAxis === 'x' ? [core.x0, core.x1] : [core.z0, core.z1];
@@ -197,7 +226,7 @@ function writeCounter(
     const x = axes.tangentAxis === 'x' ? t : d;
     const z = axes.tangentAxis === 'x' ? d : t;
     const isAccent = (t - t0) % 3 === 0;
-    placeFurnitureCell(world, baseY, core, interior, x, z, isAccent ? neonColor : SHOP_COUNTER);
+    placeFurnitureCell(world, baseY, core, interior, x, z, isAccent ? neonColor : SHOP_COUNTER, excludeColumns);
   }
 }
 
@@ -225,11 +254,27 @@ function writeBackWallSignage(world: World, baseY: number, tier0: BuildingTier, 
   for (const [x, z] of cells) world.setBlockRaw(x, y, z, neonColor);
 }
 
-/** Caps the room with a solid ceiling at `baseY + CEILING_RY`. */
-function writeCeiling(world: World, baseY: number, interior: Rect): void {
+/**
+ * Caps the room with a solid ceiling at `baseY + CEILING_RY`, except over a
+ * coexisting stair shaft's own footprint (`excludeColumns`). A real-output
+ * climb-BFS (see `CityGenerator.test.ts`) caught this: the ceiling is a
+ * blanket slab at a *fixed* row regardless of where the shaft's spiral is in
+ * its climb, and that fixed row lands exactly on the "+2 rows above the
+ * departure step" `tryAutoStep` needs to climb through the shaft's first few
+ * risers — the furniture writers already dodge `excludeColumns`, but nothing
+ * previously told the ceiling to. Unlike furniture (which can legitimately
+ * just not exist in a cell), the shaft needs to rise cleanly through this
+ * floor no matter which of its 8 ring columns happens to line up with this
+ * particular row, so the whole 3x3 footprint is excluded here — not just the
+ * specific columns this one row's climb-gate math would require — mirroring
+ * how the elevator shaft keeps its own well hollow through its *entire*
+ * height regardless of what a tier's own walls would otherwise put there.
+ */
+function writeCeiling(world: World, baseY: number, interior: Rect, excludeColumns?: ReadonlySet<string>): void {
   const y = baseY + CEILING_RY;
   for (let x = interior.x0; x <= interior.x1; x++) {
     for (let z = interior.z0; z <= interior.z1; z++) {
+      if (excludeColumns?.has(`${x},${z}`)) continue;
       world.setBlockRaw(x, y, z, CONCRETE);
     }
   }
@@ -241,26 +286,41 @@ function writeCeiling(world: World, baseY: number, interior: Rect): void {
  * see this module's doc comment for why that alone guarantees
  * doorway-to-room connectivity regardless of archetype. `setBlockRaw` only,
  * no dirty events, matching every other `gen/` writer.
+ *
+ * `excludeColumns` — a stair shaft's footprint (see
+ * `infrastructure.ts`'s `stairShaftFootprintColumns`), when this building
+ * will get one — is threaded through to every furniture writer so none of
+ * them plant a shelf/counter/accent block where the shaft is about to rise.
+ * It's the caller's job to compute this (a shaft's existence depends on the
+ * whole-city bridge plan, which isn't available at per-building write time);
+ * omitting it just means furniture is written and then overwritten by the
+ * shaft later, which is correct but wasteful.
  */
-export function writeShopInterior(world: World, baseY: number, tier0: BuildingTier, plan: ShopInteriorPlan): void {
+export function writeShopInterior(
+  world: World,
+  baseY: number,
+  tier0: BuildingTier,
+  plan: ShopInteriorPlan,
+  excludeColumns?: ReadonlySet<string>,
+): void {
   const { archetype, neonColor, doorSide, interior, core } = plan;
   const axes = roomAxes(doorSide);
 
   switch (archetype) {
     case 'electronics':
-      writeShelfAisles(world, baseY, core, interior, axes, neonColor, false);
+      writeShelfAisles(world, baseY, core, interior, axes, neonColor, false, excludeColumns);
       break;
     case 'convenience':
-      writeShelfAisles(world, baseY, core, interior, axes, neonColor, true);
+      writeShelfAisles(world, baseY, core, interior, axes, neonColor, true, excludeColumns);
       break;
     case 'bar':
-      writeCounter(world, baseY, core, interior, axes, neonColor, 'far');
+      writeCounter(world, baseY, core, interior, axes, neonColor, 'far', excludeColumns);
       break;
     case 'noodle_bar':
-      writeCounter(world, baseY, core, interior, axes, neonColor, 'mid');
+      writeCounter(world, baseY, core, interior, axes, neonColor, 'mid', excludeColumns);
       break;
   }
 
   writeBackWallSignage(world, baseY, tier0, doorSide, neonColor);
-  writeCeiling(world, baseY, interior);
+  writeCeiling(world, baseY, interior, excludeColumns);
 }

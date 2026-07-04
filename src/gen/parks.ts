@@ -38,6 +38,16 @@ export interface ParkPlan {
   lamps: ParkLamp[];
 }
 
+/** True if a tree trunk at (x, z) would put its trunk *or* any of its 8 canopy-spill neighbors on an obstacle column. */
+function overlapsObstacle(x: number, z: number, obstacleColumns: ReadonlySet<string>): boolean {
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      if (obstacleColumns.has(`${x + dx},${z + dz}`)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Plans a park for one PARK-district block. The gravel path is a 2-wide
  * cross spanning the *entire* block rect (not the grass inset), so its four
@@ -46,8 +56,20 @@ export interface ParkPlan {
  * layout is bordered by road, never by another block), so the path connects
  * to the road through that adjacency rather than by stepping onto a road
  * cell itself — this is what "paths connect to road edges" means here.
+ *
+ * `obstacleColumns` — real generator-output testing (`CityGenerator.test.ts`'s
+ * climb BFS) caught a tree planted directly in an elevated walkway's
+ * staircase run: `CityGenerator` writes parks *after* walkways (see its own
+ * doc comment for why billboards/bridges/parks are ordered the way they
+ * are), so nothing previously stopped a tree's trunk or canopy from
+ * re-solidifying a riser's headroom the same way the sky-lobby slab did to
+ * bridge stairs. `obstacleColumns` is every (x, z) a walkway's deck or
+ * staircase occupies, citywide; a tree roll (trunk *or* any of its 8 canopy
+ * neighbors — the canopy spills one cell past the trunk, see `writeTree`)
+ * that would land on one is skipped exactly like a roll landing on the
+ * park's own path.
  */
-export function planPark(block: CityBlock, rng: Rng): ParkPlan {
+export function planPark(block: CityBlock, rng: Rng, obstacleColumns: ReadonlySet<string> = new Set()): ParkPlan {
   const centerX = block.x + Math.floor(block.width / 2);
   const centerZ = block.z + Math.floor(block.depth / 2);
 
@@ -82,6 +104,7 @@ export function planPark(block: CityBlock, rng: Rng): ParkPlan {
     const x = treeRng.intRange(grassX, grassX + grassWidth - 1);
     const z = treeRng.intRange(grassZ, grassZ + grassDepth - 1);
     if (pathSet.has(`${x},${z}`)) continue;
+    if (overlapsObstacle(x, z, obstacleColumns)) continue;
     trees.push({ x, z, trunkHeight: treeRng.intRange(TREE_MIN_TRUNK, TREE_MAX_TRUNK) });
   }
 
