@@ -30,7 +30,7 @@ describe('EntitySystem', () => {
     });
 
     for (let i = 0; i < 30; i++) {
-      system.update(1 / 60, 15, 15);
+      system.update(1 / 60, 15, GROUND_Y, 15);
     }
     system.render();
 
@@ -53,7 +53,7 @@ describe('EntitySystem', () => {
 
     system.rebuild(world, GROUND_Y, 'system-test');
     for (let i = 0; i < 60; i++) {
-      system.update(1 / 60, 20, 20);
+      system.update(1 / 60, 20, GROUND_Y, 20);
     }
     system.render();
 
@@ -78,12 +78,12 @@ describe('EntitySystem', () => {
     });
 
     system.rebuild(world, GROUND_Y, 'system-reset-a');
-    for (let i = 0; i < 60; i++) system.update(1 / 60, 20, 20);
+    for (let i = 0; i < 60; i++) system.update(1 / 60, 20, GROUND_Y, 20);
 
     // Regenerate into an empty (all-air) world -- no sidewalk anywhere.
     const emptyWorld = new World();
     system.rebuild(emptyWorld, GROUND_Y, 'system-reset-b');
-    system.update(1 / 60, 20, 20);
+    system.update(1 / 60, 20, GROUND_Y, 20);
     system.render();
 
     const anyVisibleInstances = scene.children.some(

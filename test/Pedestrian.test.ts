@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildNavGrid, isSidewalkCell, type NavGrid } from '../src/entities/NavGrid';
+import { buildNavGrid, isElevatedWalkableCell, isSidewalkCell, type NavGrid } from '../src/entities/NavGrid';
 import { createPedestrianAt, stepPedestrian } from '../src/entities/Pedestrian';
-import { CONCRETE, SIDEWALK } from '../src/world/BlockRegistry';
+import { CONCRETE, METAL, SIDEWALK } from '../src/world/BlockRegistry';
 import { createRng } from '../src/gen/rng';
 import { World } from '../src/world/World';
 
@@ -30,7 +30,7 @@ describe('stepPedestrian', () => {
     for (let x = 0; x < 15; x++) cells.push([x, 5]);
     const grid = buildGridWithSidewalkCells(cells);
 
-    const ped = createPedestrianAt(2, 5, 1.4);
+    const ped = createPedestrianAt(2, 5, GROUND_Y, 1.4);
     const rng = createRng('ped-straight');
     walk(ped, grid, rng, 600); // 10s of sim time, ~14m at 1.4 m/s -- crosses the whole corridor
 
@@ -44,7 +44,7 @@ describe('stepPedestrian', () => {
     for (let z = 5; z < 10; z++) cells.push([9, z]);
     const grid = buildGridWithSidewalkCells(cells);
 
-    const ped = createPedestrianAt(1, 5, 1.4);
+    const ped = createPedestrianAt(1, 5, GROUND_Y, 1.4);
     const rng = createRng('ped-corner');
     for (let i = 0; i < 900; i++) {
       stepPedestrian(ped, 1 / 60, grid, rng);
@@ -60,7 +60,7 @@ describe('stepPedestrian', () => {
       [2, 5],
     ]);
 
-    const ped = createPedestrianAt(0, 5, 1.4);
+    const ped = createPedestrianAt(0, 5, GROUND_Y, 1.4);
     const rng = createRng('ped-deadend');
 
     // Long enough to reach the far end and bounce back at least once.
@@ -75,10 +75,127 @@ describe('stepPedestrian', () => {
 
   it('marks an isolated sidewalk cell pedestrian as not alive once it has nowhere to go', () => {
     const grid = buildGridWithSidewalkCells([[5, 5]]);
-    const ped = createPedestrianAt(5, 5, 1.4);
+    const ped = createPedestrianAt(5, 5, GROUND_Y, 1.4);
     const rng = createRng('ped-isolated');
 
     stepPedestrian(ped, 1 / 60, grid, rng); // arrives immediately (already at cell center) -> chooseNextCell finds no candidates
+
+    expect(ped.alive).toBe(false);
+  });
+
+  it('marks a pedestrian not-alive once its own current cell stops being walkable', () => {
+    const grid = buildGridWithSidewalkCells([
+      [4, 5],
+      [5, 5],
+      [6, 5],
+    ]);
+    const ped = createPedestrianAt(5, 5, GROUND_Y, 1.4);
+    const rng = createRng('ped-floor-removed');
+
+    // Simulate a sandbox edit + rebuild that shrank the sidewalk out from
+    // under this pedestrian's current cell, without moving it first.
+    grid.sidewalk[5 + 5 * WIDTH] = 0;
+
+    stepPedestrian(ped, 1 / 60, grid, rng);
+
+    expect(ped.alive).toBe(false);
+  });
+});
+
+const ELEVATED_Y = 30;
+
+/** An elevated deck: every (x, z) in `cells` is walkable at `ELEVATED_Y`, nothing else is. */
+function buildGridWithElevatedDeck(cells: [number, number][]): NavGrid {
+  const world = new World();
+  for (const [x, z] of cells) {
+    world.setBlock(x, ELEVATED_Y, z, METAL);
+  }
+  return buildNavGrid(world, WIDTH, DEPTH, GROUND_Y);
+}
+
+describe('stepPedestrian on an elevated deck', () => {
+  it('walks a deck corridor without ever leaving deck cells', () => {
+    const cells: [number, number][] = [];
+    for (let x = 0; x < 12; x++) cells.push([x, 5]);
+    const grid = buildGridWithElevatedDeck(cells);
+    expect(grid.elevatedLevels).toHaveLength(1);
+
+    const ped = createPedestrianAt(2, 5, ELEVATED_Y, 1.4);
+    const rng = createRng('ped-deck-straight');
+
+    for (let i = 0; i < 900; i++) {
+      stepPedestrian(ped, 1 / 60, grid, rng);
+      expect(ped.alive).toBe(true);
+      expect(ped.y).toBe(ELEVATED_Y);
+      expect(isElevatedWalkableCell(grid, 0, ped.cellX, ped.cellZ)).toBe(true);
+    }
+  });
+
+  it('never steps onto an open deck edge (no rail-cell headroom) even when neighboring ground-level sidewalk exists directly below', () => {
+    // A 3-wide bridge-shaped deck: only the middle row (z=5) has clearance
+    // above it (mimics a bridge's rail-blocked edge rows) -- z=4 and z=6 are
+    // METAL with something solid stacked on top, exactly like a rail.
+    const world = new World();
+    for (let x = 0; x < 10; x++) {
+      world.setBlock(x, ELEVATED_Y, 4, METAL);
+      world.setBlock(x, ELEVATED_Y + 1, 4, METAL); // "rail" blocking headroom
+      world.setBlock(x, ELEVATED_Y, 5, METAL);
+      world.setBlock(x, ELEVATED_Y, 6, METAL);
+      world.setBlock(x, ELEVATED_Y + 1, 6, METAL);
+    }
+    // Ground-level sidewalk directly underneath the whole footprint -- a
+    // pedestrian confined to the deck must never wander down onto it.
+    for (let x = 0; x < 10; x++) {
+      for (let z = 4; z <= 6; z++) {
+        world.setBlock(x, 0, z, CONCRETE);
+        world.setBlock(x, GROUND_Y, z, SIDEWALK);
+      }
+    }
+    const grid = buildNavGrid(world, WIDTH, DEPTH, GROUND_Y);
+
+    const ped = createPedestrianAt(2, 5, ELEVATED_Y, 1.4);
+    const rng = createRng('ped-deck-rails');
+
+    for (let i = 0; i < 900; i++) {
+      stepPedestrian(ped, 1 / 60, grid, rng);
+      expect(ped.alive).toBe(true);
+      expect(ped.cellZ).toBe(5); // never strays onto the rail-blocked z=4/z=6 rows
+      expect(ped.y).toBe(ELEVATED_Y); // never drops to the ground row below
+    }
+  });
+
+  it('reverses at a deck dead end instead of falling off the edge', () => {
+    const grid = buildGridWithElevatedDeck([
+      [0, 5],
+      [1, 5],
+      [2, 5],
+    ]);
+    const ped = createPedestrianAt(0, 5, ELEVATED_Y, 1.4);
+    const rng = createRng('ped-deck-deadend');
+
+    for (let i = 0; i < 1200; i++) {
+      stepPedestrian(ped, 1 / 60, grid, rng);
+      expect(ped.alive).toBe(true);
+      expect(ped.cellX).toBeGreaterThanOrEqual(0);
+      expect(ped.cellX).toBeLessThanOrEqual(2);
+      expect(ped.cellZ).toBe(5);
+    }
+  });
+
+  it('despawns gracefully (never floats) once its deck cell is edited away', () => {
+    const grid = buildGridWithElevatedDeck([
+      [4, 5],
+      [5, 5],
+      [6, 5],
+    ]);
+    const ped = createPedestrianAt(5, 5, ELEVATED_Y, 1.4);
+    const rng = createRng('ped-deck-edited-away');
+
+    // Simulate a sandbox edit removing the deck cell the pedestrian is
+    // standing on (next NavGrid rebuild would reflect this).
+    (grid.elevatedLevels[0] as { walkable: Uint8Array }).walkable[5 + 5 * WIDTH] = 0;
+
+    stepPedestrian(ped, 1 / 60, grid, rng);
 
     expect(ped.alive).toBe(false);
   });

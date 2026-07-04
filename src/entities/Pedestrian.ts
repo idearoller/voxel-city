@@ -4,21 +4,31 @@
  * hands the result to the presentation layer (`engine/EntityRenderer`).
  */
 
-import { isSidewalkCell, type NavGrid } from './NavGrid';
+import { isWalkableSurfaceCell, type NavGrid } from './NavGrid';
 import type { Rng } from '../gen/rng';
 
 export interface Pedestrian {
   /** Continuous world position, mid-stride between cell centers. */
   x: number;
   z: number;
-  /** The sidewalk cell this pedestrian is currently walking towards. */
+  /** The sidewalk/deck cell this pedestrian is currently walking towards. */
   cellX: number;
   cellZ: number;
+  /**
+   * The surface Y this pedestrian's feet rest on: `grid.groundY` for a
+   * sidewalk/park-path walker, or one of `grid.elevatedLevels[].y` for a
+   * skybridge/walkway walker. Fixed for the pedestrian's whole lifetime —
+   * elevated NPCs are deck-bound by design (see `NavGrid`'s doc comment):
+   * they walk their one deck back and forth and never path down to the
+   * street, which keeps the nav model a flat per-level grid instead of a
+   * full 3D graph with stairs.
+   */
+  y: number;
   /** Current heading: one of -1/0/1 per axis, at most one axis nonzero. Zero,zero only at the instant of spawn. */
   dirX: number;
   dirZ: number;
   speed: number;
-  /** False once the pedestrian has nowhere left to go (isolated sidewalk cell) — the simulation removes it next tick. */
+  /** False once the pedestrian has nowhere left to go (isolated cell, or its cell stopped being walkable) — the simulation removes it next tick. */
   alive: boolean;
 }
 
@@ -35,13 +45,14 @@ const NEIGHBOR_DIRS: readonly [number, number][] = [
   [0, -1],
 ];
 
-/** Spawns a pedestrian already centered on (cellX, cellZ) — its first `step` will immediately pick a real heading. */
-export function createPedestrianAt(cellX: number, cellZ: number, speed: number): Pedestrian {
+/** Spawns a pedestrian already centered on (cellX, cellZ) at surface `y` — its first `step` will immediately pick a real heading. */
+export function createPedestrianAt(cellX: number, cellZ: number, y: number, speed: number): Pedestrian {
   return {
     x: cellX + 0.5,
     z: cellZ + 0.5,
     cellX,
     cellZ,
+    y,
     dirX: 0,
     dirZ: 0,
     speed,
@@ -50,7 +61,7 @@ export function createPedestrianAt(cellX: number, cellZ: number, speed: number):
 }
 
 function chooseNextCell(ped: Pedestrian, grid: NavGrid, rng: Rng): void {
-  const candidates = NEIGHBOR_DIRS.filter(([dx, dz]) => isSidewalkCell(grid, ped.cellX + dx, ped.cellZ + dz));
+  const candidates = NEIGHBOR_DIRS.filter(([dx, dz]) => isWalkableSurfaceCell(grid, ped.y, ped.cellX + dx, ped.cellZ + dz));
   if (candidates.length === 0) {
     ped.alive = false;
     return;
@@ -82,6 +93,16 @@ function chooseNextCell(ped: Pedestrian, grid: NavGrid, rng: Rng): void {
 /** Advances a pedestrian by `dt` seconds: walks toward its current target cell center, picking a new one on arrival. */
 export function stepPedestrian(ped: Pedestrian, dt: number, grid: NavGrid, rng: Rng): void {
   if (!ped.alive) return;
+
+  // Its own current cell may have stopped being walkable since it was chosen
+  // (a rebuilt NavGrid whose deck/sidewalk shrank underneath it — see
+  // `Pedestrian.y`'s doc comment). Catching that here, rather than only when
+  // `chooseNextCell` next runs out of candidates, is what keeps a pedestrian
+  // from lingering mid-air over a since-removed deck cell.
+  if (!isWalkableSurfaceCell(grid, ped.y, ped.cellX, ped.cellZ)) {
+    ped.alive = false;
+    return;
+  }
 
   const targetX = ped.cellX + 0.5;
   const targetZ = ped.cellZ + 0.5;

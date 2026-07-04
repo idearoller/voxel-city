@@ -69,7 +69,7 @@ const BRIDGE_MIN_TOWER_FOOTPRINT = 10;
  * how many bridges a tower may anchor (`MAX_BRIDGES_PER_TOWER` still caps
  * that).
  */
-const SKY_LEVELS = [30, 50, 70, 90] as const;
+export const SKY_LEVELS = [30, 50, 70, 90] as const;
 /** Deck (1) + rails (2) + headroom (1) that must fit below the tower's roof at the chosen sky level. */
 const SKY_LEVEL_MARGIN = 4;
 const BRIDGE_DECK_WIDTH = 3;
@@ -584,7 +584,7 @@ export function writeSkyLobby(world: World, lobby: SkyLobby): void {
 // ---------------------------------------------------------------------------
 
 /** Absolute world Y of the elevated walkway deck; the walkable surface is one voxel above it. */
-const WALKWAY_Y = 12;
+export const WALKWAY_Y = 12;
 const WALKWAY_DECK_DEPTH = 2;
 const WALKWAY_MIN_BLOCK_WIDTH = 6;
 

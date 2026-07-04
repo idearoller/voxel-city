@@ -8,25 +8,52 @@
  * `gen/layout.ts`'s `findGroundSpawnPoint` for the same layout-free
  * convention).
  *
- * Only the ground-floor surface (`groundY`, i.e. `CityGenerator`'s
- * GROUND_SURFACE_Y) is scanned — elevated walkways/bridges are deliberately
- * out of scope for phase 2's NPCs/vehicles (see EntitySystem doc comment).
+ * The ground-floor surface (`groundY`, i.e. `CityGenerator`'s
+ * GROUND_SURFACE_Y) is scanned for sidewalk/road/park-path cells. On top of
+ * that, `elevatedLevels` holds one additional walkable grid per known
+ * elevated deck row — skybridges (`infrastructure.ts`'s `SKY_LEVELS`) and the
+ * downtown walkway row (`WALKWAY_Y`) — derived the same layout-free way, by
+ * scanning those specific rows for METAL-with-clear-headroom cells rather
+ * than depending on `GenerationResult`'s `bridges`/`walkways` plans (which
+ * don't exist after a `.vxc` import). Only these known rows are scanned, not
+ * every Y in the world — see `buildElevatedLevels`.
  */
 
-import { AIR, ASPHALT, SIDEWALK } from '../world/BlockRegistry';
+import { SKY_LEVELS, WALKWAY_Y } from '../gen/infrastructure';
+import { AIR, ASPHALT, GRAVEL, METAL, SIDEWALK } from '../world/BlockRegistry';
 import type { World } from '../world/World';
+
+/** Every Y row a known elevated pedestrian deck can sit on, citywide. */
+const ELEVATED_DECK_LEVELS: readonly number[] = [WALKWAY_Y, ...SKY_LEVELS];
+
+export interface ElevatedLevel {
+  /** Absolute world Y of this level's solid deck surface (e.g. a skybridge's `level` or `WALKWAY_Y`). The walkable clearance row is `y + 1`. */
+  readonly y: number;
+  /** 1 = walkable deck cell at this level, 0 = not. Same `x + z * width` indexing as `NavGrid.sidewalk`. */
+  readonly walkable: Uint8Array;
+  /**
+   * Every walkable cell's (x, z), precomputed once at scan time — lets spawn
+   * logic sample directly from the deck's own cells instead of
+   * rejection-sampling a random annulus point against a citywide grid where
+   * decks are a tiny fraction of the area (see `Spawner.ts`'s
+   * `pickElevatedSpawnCell`).
+   */
+  readonly cells: ReadonlyArray<{ readonly x: number; readonly z: number }>;
+}
 
 export interface NavGrid {
   readonly width: number;
   readonly depth: number;
   readonly groundY: number;
-  /** 1 = walkable sidewalk cell, 0 = not. Row-major, index = x + z * width. */
+  /** 1 = walkable sidewalk or park-path cell, 0 = not. Row-major, index = x + z * width. */
   readonly sidewalk: Uint8Array;
   /** 1 = drivable road cell, 0 = not. Same indexing as `sidewalk`. */
   readonly road: Uint8Array;
   /** Preferred travel heading for a road cell (one of -1/0/1 per axis, at most one axis nonzero). */
   readonly flowX: Int8Array;
   readonly flowZ: Int8Array;
+  /** One entry per known elevated deck row that has any walkable cells at all (see `ELEVATED_DECK_LEVELS`). */
+  readonly elevatedLevels: readonly ElevatedLevel[];
 }
 
 function cellIndex(width: number, x: number, z: number): number {
@@ -45,6 +72,29 @@ export function isSidewalkCell(grid: NavGrid, x: number, z: number): boolean {
 export function isRoadCell(grid: NavGrid, x: number, z: number): boolean {
   if (!inBounds(grid, x, z)) return false;
   return grid.road[cellIndex(grid.width, x, z)] === 1;
+}
+
+/** True if (x, z) is a walkable deck cell on `grid.elevatedLevels[levelIndex]`. */
+export function isElevatedWalkableCell(grid: NavGrid, levelIndex: number, x: number, z: number): boolean {
+  if (!inBounds(grid, x, z)) return false;
+  const level = grid.elevatedLevels[levelIndex];
+  if (!level) return false;
+  return level.walkable[cellIndex(grid.width, x, z)] === 1;
+}
+
+/**
+ * True if (x, z) is walkable at the given surface Y — `grid.groundY` (checked
+ * against `sidewalk`, i.e. sidewalk or park path) or one of
+ * `grid.elevatedLevels`' own `y` values (checked against that level's own
+ * `walkable` grid). A `y` matching neither is never walkable. This is the
+ * level-agnostic check `Pedestrian` uses every tick, since a pedestrian only
+ * remembers the surface Y it's confined to (see `Pedestrian.y`), not which
+ * `elevatedLevels` index that corresponds to.
+ */
+export function isWalkableSurfaceCell(grid: NavGrid, y: number, x: number, z: number): boolean {
+  if (y === grid.groundY) return isSidewalkCell(grid, x, z);
+  const levelIndex = grid.elevatedLevels.findIndex((level) => level.y === y);
+  return levelIndex === -1 ? false : isElevatedWalkableCell(grid, levelIndex, x, z);
 }
 
 /**
@@ -140,11 +190,64 @@ function computeFlowField(
 }
 
 /**
+ * Scans one elevated deck row (`y`) over a `width` x `depth` footprint for
+ * walkable cells: a solid METAL deck surface, AIR directly above it for
+ * headroom, AND AIR directly below it — the same "surface + clearance" rule
+ * `buildNavGrid` applies to the ground row, plus one more check specific to
+ * elevated rows.
+ *
+ * That third check (`y - 1` is AIR) is load-bearing, not defensive
+ * boilerplate: a real skybridge/walkway deck floats in the open gap between
+ * towers or over the street, with nothing solid underneath it, but a
+ * building's rooftop parapet trim (`buildings.ts`'s roof-edge ring) is also
+ * often METAL, sits at `roofY + 1`, and that roof Y can coincide with one of
+ * these scanned rows (mostly `y=30`, since tiers commonly top out a couple
+ * voxels below it). Without the below-check, a parapet ring reads as a tiny
+ * isolated walkable "deck" sitting on solid roof — measured on real
+ * generated cities, this produced false-positive walkable cells on the
+ * majority of seeds (up to ~35% of one city's total elevated cells) and let
+ * pedestrians pace forever along a skyscraper's roof edge. A parapet's own
+ * `y - 1` is the roof slab (solid); a real deck's `y - 1` is open air. This
+ * costs a handful of real deck cells directly at a tower's own wall column
+ * (where the tower's solid structure happens to extend to `y - 1` right at
+ * the doorway threshold) but keeps ~98%+ of genuine deck area.
+ *
+ * Bridge decks are 3-wide with 2-high NEON rails along the two edge
+ * rows/columns (see `infrastructure.ts`'s `writeBridge`); the headroom check
+ * alone already excludes those edge cells (the rail itself occupies the
+ * clearance voxel) without needing to know a bridge's axis or lane offset.
+ * Walkway decks have no rails, so their whole footprint passes both checks.
+ * Scanning by block content rather than by `GenerationResult`'s
+ * `bridges`/`walkways` plans is what keeps this rebuildable after a `.vxc`
+ * import, which carries no such plan (see this file's own doc comment).
+ */
+function buildElevatedLevel(world: World, width: number, depth: number, y: number): ElevatedLevel {
+  const walkable = new Uint8Array(width * depth);
+  const cells: Array<{ x: number; z: number }> = [];
+
+  for (let x = 0; x < width; x++) {
+    for (let z = 0; z < depth; z++) {
+      if (world.getBlock(x, y, z) !== METAL) continue;
+      if (world.getBlock(x, y + 1, z) !== AIR) continue;
+      if (world.getBlock(x, y - 1, z) !== AIR) continue;
+      walkable[cellIndex(width, x, z)] = 1;
+      cells.push({ x, z });
+    }
+  }
+
+  return { y, walkable, cells };
+}
+
+/**
  * Scans `world`'s ground-surface row (`groundY`) over a `width` x `depth`
- * footprint into sidewalk/road boolean grids plus a road flow field. A
- * surface block only counts as walkable/drivable if the voxel directly
- * above it is AIR (headroom clearance) — keeps entities out of columns a
- * building has since grown into.
+ * footprint into sidewalk/road boolean grids plus a road flow field, then
+ * scans every known elevated deck row (`ELEVATED_DECK_LEVELS`) the same way
+ * (see `buildElevatedLevel`). A ground surface block only counts as
+ * walkable/drivable if the voxel directly above it is AIR (headroom
+ * clearance) — keeps entities out of columns a building has since grown
+ * into. SIDEWALK and GRAVEL (park paths) both count as walkable ground —
+ * pedestrians don't distinguish a park's gravel cross from a street
+ * sidewalk, just "not a road, not grass."
  */
 export function buildNavGrid(world: World, width: number, depth: number, groundY: number): NavGrid {
   const sidewalk = new Uint8Array(width * depth);
@@ -157,11 +260,14 @@ export function buildNavGrid(world: World, width: number, depth: number, groundY
       if (!hasClearance) continue;
 
       const i = cellIndex(width, x, z);
-      if (surfaceId === SIDEWALK) sidewalk[i] = 1;
+      if (surfaceId === SIDEWALK || surfaceId === GRAVEL) sidewalk[i] = 1;
       else if (surfaceId === ASPHALT) road[i] = 1;
     }
   }
 
   const { flowX, flowZ } = computeFlowField(road, width, depth);
-  return { width, depth, groundY, sidewalk, road, flowX, flowZ };
+  const elevatedLevels = ELEVATED_DECK_LEVELS.map((y) => buildElevatedLevel(world, width, depth, y)).filter(
+    (level) => level.walkable.some((cell) => cell === 1),
+  );
+  return { width, depth, groundY, sidewalk, road, flowX, flowZ, elevatedLevels };
 }

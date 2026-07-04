@@ -333,7 +333,7 @@ engine.start({
     modeManager.update(dt);
     atmosphere.update(dt);
     rain.update(dt, engine.camera.position, atmosphere.nightFactor);
-    entitySystem.update(dt, engine.camera.position.x, engine.camera.position.z);
+    entitySystem.update(dt, engine.camera.position.x, engine.camera.position.y, engine.camera.position.z);
   },
   render: () => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):

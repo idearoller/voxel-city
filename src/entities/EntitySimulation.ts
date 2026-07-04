@@ -6,7 +6,7 @@
 
 import { createPedestrianAt, stepPedestrian, type Pedestrian } from './Pedestrian';
 import { isRoadCell, isSidewalkCell, type NavGrid } from './NavGrid';
-import { isBeyondDespawnRadius, pickSpawnCell } from './Spawner';
+import { isBeyondDespawnRadius, pickElevatedSpawnCell, pickSpawnCell } from './Spawner';
 import { createVehicleAt, stepVehicle, type Vehicle } from './Vehicle';
 import { createRng, type Rng } from '../gen/rng';
 
@@ -73,7 +73,7 @@ export class EntitySimulation {
     this.rng = createRng(seed);
   }
 
-  update(dt: number, playerX: number, playerZ: number): void {
+  update(dt: number, playerX: number, playerY: number, playerZ: number): void {
     const grid = this.grid;
     if (!grid) return;
 
@@ -89,12 +89,35 @@ export class EntitySimulation {
     swapRemoveDead(this.pedestrians);
     swapRemoveDead(this.vehicles);
 
-    this.trySpawnPedestrian(grid, playerX, playerZ);
+    this.trySpawnPedestrian(grid, playerX, playerY, playerZ);
     this.trySpawnVehicle(grid, playerX, playerZ);
   }
 
-  private trySpawnPedestrian(grid: NavGrid, playerX: number, playerZ: number): void {
+  /**
+   * Tries an elevated deck cell first (see `pickElevatedSpawnCell`'s doc
+   * comment — it already accounts for the 30% cap, altitude-aware distance,
+   * and "no deck in range" case), falling back to a normal ground sidewalk
+   * spawn whenever that misses so an elevated-roll miss never leaves a spawn
+   * tick doing nothing.
+   */
+  private trySpawnPedestrian(grid: NavGrid, playerX: number, playerY: number, playerZ: number): void {
     if (this.pedestrians.length >= this.config.maxPedestrians) return;
+
+    const elevatedCell = pickElevatedSpawnCell(
+      grid,
+      playerX,
+      playerY,
+      playerZ,
+      this.config.spawnMinRadius,
+      this.config.spawnMaxRadius,
+      this.rng,
+    );
+    if (elevatedCell) {
+      const speed = this.rng.float(this.config.pedestrianSpeedRange[0], this.config.pedestrianSpeedRange[1]);
+      this.pedestrians.push(createPedestrianAt(elevatedCell.x, elevatedCell.z, elevatedCell.y, speed));
+      return;
+    }
+
     const cell = pickSpawnCell(
       grid,
       isSidewalkCell,
@@ -106,7 +129,7 @@ export class EntitySimulation {
     );
     if (!cell) return;
     const speed = this.rng.float(this.config.pedestrianSpeedRange[0], this.config.pedestrianSpeedRange[1]);
-    this.pedestrians.push(createPedestrianAt(cell.x, cell.z, speed));
+    this.pedestrians.push(createPedestrianAt(cell.x, cell.z, grid.groundY, speed));
   }
 
   private trySpawnVehicle(grid: NavGrid, playerX: number, playerZ: number): void {

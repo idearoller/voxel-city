@@ -72,16 +72,16 @@ export class EntityRenderer {
     groundY: number,
     elapsedTime: number,
   ): void {
-    this.updatePedestrians(pedestrians, groundY, elapsedTime);
+    this.updatePedestrians(pedestrians, elapsedTime);
     this.updateVehicles(vehicles, groundY);
   }
 
-  private updatePedestrians(pedestrians: readonly Pedestrian[], groundY: number, elapsedTime: number): void {
-    const feetY = groundY + 1;
+  private updatePedestrians(pedestrians: readonly Pedestrian[], elapsedTime: number): void {
     const count = Math.min(pedestrians.length, this.pedestrianBodyMesh.instanceMatrix.count);
 
     for (let i = 0; i < count; i++) {
       const ped = pedestrians[i] as Pedestrian;
+      const feetY = ped.y + 1;
       const yaw = ped.dirX !== 0 || ped.dirZ !== 0 ? Math.atan2(ped.dirX, ped.dirZ) : 0;
       const bob = Math.sin(elapsedTime * BOB_FREQUENCY + i) * BOB_AMPLITUDE;
 

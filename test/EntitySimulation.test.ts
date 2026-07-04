@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ENTITY_CONFIG, EntitySimulation, type EntitySimulationConfig } from '../src/entities/EntitySimulation';
-import type { NavGrid } from '../src/entities/NavGrid';
+import type { ElevatedLevel, NavGrid } from '../src/entities/NavGrid';
+
+const ELEVATED_Y = 30;
 
 function makeOpenGrid(width: number, depth: number): NavGrid {
   return {
@@ -11,7 +13,24 @@ function makeOpenGrid(width: number, depth: number): NavGrid {
     road: new Uint8Array(width * depth).fill(1),
     flowX: new Int8Array(width * depth).fill(1),
     flowZ: new Int8Array(width * depth),
+    elevatedLevels: [],
   };
+}
+
+/** Builds an `ElevatedLevel` from a `walkable` grid, deriving `cells` the same way `NavGrid.buildElevatedLevel` does. */
+function makeElevatedLevel(y: number, width: number, walkable: Uint8Array): ElevatedLevel {
+  const cells: Array<{ x: number; z: number }> = [];
+  for (let i = 0; i < walkable.length; i++) {
+    if (walkable[i] !== 1) continue;
+    cells.push({ x: i % width, z: Math.floor(i / width) });
+  }
+  return { y, walkable, cells };
+}
+
+/** An open ground grid plus one fully-walkable elevated deck at `ELEVATED_Y` covering the same footprint. */
+function makeGridWithElevatedDeck(width: number, depth: number): NavGrid {
+  const walkable = new Uint8Array(width * depth).fill(1);
+  return { ...makeOpenGrid(width, depth), elevatedLevels: [makeElevatedLevel(ELEVATED_Y, width, walkable)] };
 }
 
 const TEST_CONFIG: EntitySimulationConfig = {
@@ -26,7 +45,7 @@ const TEST_CONFIG: EntitySimulationConfig = {
 describe('EntitySimulation', () => {
   it('does nothing before reset() has provided a NavGrid', () => {
     const sim = new EntitySimulation(TEST_CONFIG);
-    sim.update(1 / 60, 0, 0);
+    sim.update(1 / 60, 0, 1, 0);
     expect(sim.pedestrianList).toHaveLength(0);
     expect(sim.vehicleList).toHaveLength(0);
   });
@@ -35,7 +54,7 @@ describe('EntitySimulation', () => {
     const sim = new EntitySimulation(TEST_CONFIG);
     sim.reset(makeOpenGrid(60, 60), 'sim-ramp-up');
 
-    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 30);
+    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 1, 30);
 
     expect(sim.pedestrianList.length).toBe(TEST_CONFIG.maxPedestrians);
     expect(sim.vehicleList.length).toBe(TEST_CONFIG.maxVehicles);
@@ -45,11 +64,11 @@ describe('EntitySimulation', () => {
     const sim = new EntitySimulation(TEST_CONFIG);
     sim.reset(makeOpenGrid(300, 300), 'sim-despawn');
 
-    for (let i = 0; i < 50; i++) sim.update(1 / 60, 150, 150);
+    for (let i = 0; i < 50; i++) sim.update(1 / 60, 150, 1, 150);
     expect(sim.pedestrianList.length).toBeGreaterThan(0);
 
     // Player teleports far away -- every existing entity is now well beyond despawnRadius.
-    sim.update(1 / 60, 150 + 10_000, 150);
+    sim.update(1 / 60, 150 + 10_000, 1, 150);
 
     for (const ped of sim.pedestrianList) {
       const dist = Math.hypot(ped.x - (150 + 10_000), ped.z - 150);
@@ -64,7 +83,7 @@ describe('EntitySimulation', () => {
   it('reset() clears every entity and rebuilds cleanly against a new grid', () => {
     const sim = new EntitySimulation(TEST_CONFIG);
     sim.reset(makeOpenGrid(60, 60), 'sim-before');
-    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 30);
+    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 1, 30);
     expect(sim.pedestrianList.length).toBeGreaterThan(0);
 
     sim.reset(makeOpenGrid(60, 60), 'sim-after');
@@ -77,11 +96,77 @@ describe('EntitySimulation', () => {
     const sim = new EntitySimulation(TEST_CONFIG);
     sim.reset(makeOpenGrid(60, 60), 'sim-min-radius');
 
-    sim.update(1 / 60, 30, 30);
+    sim.update(1 / 60, 30, 1, 30);
 
     for (const ped of sim.pedestrianList) {
       const dist = Math.hypot(ped.x - 30, ped.z - 30);
       expect(dist).toBeGreaterThanOrEqual(TEST_CONFIG.spawnMinRadius - 1);
+    }
+  });
+
+  it('never spawns an elevated pedestrian when the grid has no elevated levels', () => {
+    const sim = new EntitySimulation(TEST_CONFIG);
+    sim.reset(makeOpenGrid(60, 60), 'sim-no-elevated');
+
+    for (let i = 0; i < 200; i++) sim.update(1 / 60, 30, 1, 30);
+
+    expect(sim.pedestrianList.length).toBeGreaterThan(0);
+    for (const ped of sim.pedestrianList) expect(ped.y).toBe(1);
+  });
+
+  it('spawns some pedestrians onto the elevated deck, always on a walkable deck cell, and caps the elevated share', () => {
+    const wideConfig: EntitySimulationConfig = { ...TEST_CONFIG, maxPedestrians: 60 };
+    const sim = new EntitySimulation(wideConfig);
+    sim.reset(makeGridWithElevatedDeck(60, 60), 'sim-elevated-mix');
+
+    // Player at the same altitude as the deck -- isolates the 30% share cap
+    // from the separate altitude-distance mechanic (see Spawner.test.ts for
+    // that one).
+    for (let i = 0; i < 400; i++) sim.update(1 / 60, 30, ELEVATED_Y, 30);
+
+    expect(sim.pedestrianList.length).toBe(wideConfig.maxPedestrians);
+    const elevatedCount = sim.pedestrianList.filter((ped) => ped.y === ELEVATED_Y).length;
+    const groundCount = sim.pedestrianList.length - elevatedCount;
+
+    // Both surfaces are fully walkable and equal in size here, so an
+    // unweighted coin flip would land near 50/50 -- the ~30% cap must be
+    // doing the capping, not luck.
+    expect(elevatedCount).toBeGreaterThan(0);
+    expect(groundCount).toBeGreaterThan(0);
+    expect(elevatedCount / sim.pedestrianList.length).toBeLessThanOrEqual(0.3 + 0.15); // slack for a finite sample
+  });
+
+  it('only ever spawns an elevated pedestrian onto an actual walkable deck cell, never mid-air off the deck', () => {
+    const width = 60;
+    const depth = 60;
+    // No ground at all, so every pedestrian is forced elevated (the ground
+    // fallback finds nothing) -- makes the elevated spawn path exercise
+    // deterministic instead of a rare probabilistic event.
+    const walkable = new Uint8Array(width * depth);
+    const deckStart = 20;
+    const deckEnd = 40;
+    for (let x = deckStart; x < deckEnd; x++) {
+      for (let z = deckStart; z < deckEnd; z++) walkable[x + z * width] = 1;
+    }
+    const grid: NavGrid = {
+      ...makeOpenGrid(width, depth),
+      sidewalk: new Uint8Array(width * depth),
+      elevatedLevels: [makeElevatedLevel(ELEVATED_Y, width, walkable)],
+    };
+
+    const wideConfig: EntitySimulationConfig = { ...TEST_CONFIG, maxPedestrians: 20 };
+    const sim = new EntitySimulation(wideConfig);
+    sim.reset(grid, 'sim-elevated-deck-only');
+
+    for (let i = 0; i < 400; i++) sim.update(1 / 60, 30, ELEVATED_Y, 30);
+
+    expect(sim.pedestrianList.length).toBe(wideConfig.maxPedestrians);
+    for (const ped of sim.pedestrianList) {
+      expect(ped.y).toBe(ELEVATED_Y);
+      expect(ped.cellX).toBeGreaterThanOrEqual(deckStart);
+      expect(ped.cellX).toBeLessThan(deckEnd);
+      expect(ped.cellZ).toBeGreaterThanOrEqual(deckStart);
+      expect(ped.cellZ).toBeLessThan(deckEnd);
     }
   });
 });

@@ -11,13 +11,17 @@
  * which keeps phase 2 scoped to "the city feels alive" rather than full
  * NPC/player physics.
  *
- * Deliberately out of scope for phase 2 (documented, not silently dropped):
- * elevated walkways/bridges have no NPC traffic (`NavGrid` only scans the
- * ground-floor surface); vehicles don't yield to pedestrians or each other
- * beyond not spawning on top of one another; spawn placement is a random
- * annulus around the player with no camera-heading bias, so an unlucky roll
- * can in principle spawn just outside the view frustum rather than strictly
- * behind the camera.
+ * Deliberately out of scope (documented, not silently dropped): elevated
+ * pedestrians are deck-bound — they walk their one skybridge/walkway back
+ * and forth and never path down to the street or between levels (see
+ * `Pedestrian.y`'s doc comment); vehicles stay ground-only, no elevated
+ * traffic; vehicles don't yield to pedestrians or each other beyond not
+ * spawning on top of one another; despawn and vehicle spawn placement use
+ * horizontal (x, z) distance only (`playerY` only feeds elevated-pedestrian
+ * spawn distance, see `Spawner.ts`'s `pickElevatedSpawnCell`); no
+ * camera-heading bias on spawn angle, so an unlucky roll can in principle
+ * spawn just outside the view frustum rather than strictly behind the
+ * camera.
  */
 
 import * as THREE from 'three';
@@ -49,10 +53,15 @@ export class EntitySystem {
     this.simulation.reset(grid, seed);
   }
 
-  /** Fixed 60Hz simulation tick: steps and spawns/despawns entities relative to the player. */
-  update(dt: number, playerX: number, playerZ: number): void {
+  /**
+   * Fixed 60Hz simulation tick: steps and spawns/despawns entities relative
+   * to the player. `playerY` only matters for elevated-pedestrian spawn
+   * distance (see `Spawner.ts`'s `pickElevatedSpawnCell`); despawn and
+   * vehicle spawn stay horizontal-only.
+   */
+  update(dt: number, playerX: number, playerY: number, playerZ: number): void {
     this.elapsedTime += dt;
-    this.simulation.update(dt, playerX, playerZ);
+    this.simulation.update(dt, playerX, playerY, playerZ);
   }
 
   /** Per-animation-frame sync of instanced mesh matrices from current simulation state. */
