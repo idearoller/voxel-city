@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { meshChunk } from './ChunkMesher';
+import { chunkMeshBuffersToGeometries } from './ChunkGeometryBuilder';
+import type { ChunkMeshBuffers } from './ChunkMesher';
+import { createDefaultMesherScheduler, type MesherScheduler } from './MesherScheduler';
 import { neonMaterials, roadMaterial, solidMaterial, windowLitMaterial } from './Materials';
 import { parseChunkKey } from '../world/coords';
 import type { World } from '../world/World';
-
-const REBUILD_BUDGET_PER_FRAME = 4;
 
 interface ChunkMeshes {
   solid: THREE.Mesh | null;
@@ -13,61 +13,75 @@ interface ChunkMeshes {
   neon: (THREE.Mesh | null)[];
 }
 
+/** Resolves once no scheduler tick is scheduled to run sooner than the next animation frame (browser), or a macrotask tick (Node/vitest, which has no `requestAnimationFrame`). */
+function scheduleTick(fn: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(fn);
+  } else {
+    setTimeout(fn, 0);
+  }
+}
+
 /**
- * Owns one Three.js Mesh set per dirty chunk, rebuilding a bounded number of
- * chunks per frame from World data via ChunkMesher. Disposes stale geometry
- * on every rebuild; all-air chunks are skipped (no mesh created).
+ * Owns one Three.js Mesh set per dirty chunk, meshing through a
+ * `MesherScheduler` (a worker pool in the browser, or an in-process
+ * synchronous fallback) and applying a bounded number of completed results
+ * per frame. Disposes stale geometry on every rebuild; all-air chunks are
+ * skipped (no mesh created).
  */
 export class ChunkRenderer {
   private readonly meshes = new Map<string, ChunkMeshes>();
-  private readonly dirty = new Set<string>();
+  private readonly scheduler: MesherScheduler;
 
   constructor(
-    private readonly world: World,
+    world: World,
     private readonly scene: THREE.Scene,
+    scheduler?: MesherScheduler,
   ) {
-    this.world.onChunkDirty((key) => {
-      this.dirty.add(key);
+    this.scheduler = scheduler ?? createDefaultMesherScheduler(world);
+    this.scheduler.onResult((key, buffers) => this.applyResult(key, buffers));
+    world.onChunkDirty((key, reason) => {
+      this.scheduler.requestMesh(key, parseChunkKey(key), reason);
     });
   }
 
-  /** Call once per frame; rebuilds up to REBUILD_BUDGET_PER_FRAME dirty chunks. */
+  /** Call once per frame; pumps the scheduler (dispatch + apply up to its per-frame budget). */
   update(): void {
-    let budget = REBUILD_BUDGET_PER_FRAME;
-    for (const key of this.dirty) {
-      if (budget <= 0) break;
-      this.rebuildChunk(key);
-      this.dirty.delete(key);
-      budget--;
-    }
+    this.scheduler.update();
   }
 
-  /** Number of chunks still awaiting a mesh rebuild. */
+  /** Number of chunks whose latest requested mesh hasn't yet been applied. */
   get pendingCount(): number {
-    return this.dirty.size;
+    return this.scheduler.pendingCount;
   }
 
   /**
-   * Rebuilds every currently dirty chunk immediately, bypassing the
-   * per-frame budget. Used right after city generation while a loading
-   * overlay is still up: `remeshAll()` can mark 300+ chunks dirty at once,
-   * and draining that at REBUILD_BUDGET_PER_FRAME would dribble the city in
-   * chunk-by-chunk over dozens of frames with nothing to hide it. Doing the
-   * full flush in one synchronous burst — still behind the overlay — means
-   * the whole city appears at once instead.
+   * Waits until every currently-pending chunk has been meshed and its
+   * geometry applied — pumping the scheduler every animation frame rather
+   * than blocking the main thread. Used right after city generation/import,
+   * while a loading overlay is still up: `World.remeshAll()` can mark 300+
+   * chunks dirty at once, and streaming that through the worker pool takes
+   * many frames, but every one of them happens off the main thread and
+   * behind the (still-visible) overlay, so nothing dribbles into view.
    */
-  rebuildAllDirty(): void {
-    for (const key of this.dirty) {
-      this.rebuildChunk(key);
-    }
-    this.dirty.clear();
+  flushPending(): Promise<void> {
+    return new Promise((resolve) => {
+      const step = (): void => {
+        this.scheduler.update();
+        if (this.scheduler.pendingCount === 0) {
+          resolve();
+          return;
+        }
+        scheduleTick(step);
+      };
+      step();
+    });
   }
 
-  private rebuildChunk(key: string): void {
+  private applyResult(key: string, buffers: ChunkMeshBuffers): void {
     this.disposeChunk(key);
 
-    const chunkCoord = parseChunkKey(key);
-    const geometries = meshChunk(this.world, chunkCoord);
+    const geometries = chunkMeshBuffersToGeometries(buffers);
 
     const solidMesh = geometries.solid ? new THREE.Mesh(geometries.solid, solidMaterial) : null;
     if (solidMesh) this.scene.add(solidMesh);

@@ -148,18 +148,18 @@ canvas.addEventListener('mousedown', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// Procedural city generation: seed UI (Toolbar) + a loading overlay, since
-// generateCity() (plus the full mesh rebuild below) is synchronous and can
-// take a noticeable moment on the full 384x384 plan. We show the overlay,
-// yield two animation frames so the "visible" class actually gets painted
-// before the heavy synchronous work blocks the main thread — a single rAF
-// resolves as a microtask *before* the browser paints, so the overlay would
-// never actually appear on screen — then generate, flush every resulting
-// dirty chunk into meshes in one go (see ChunkRenderer.rebuildAllDirty), and
-// only then drop the camera and hide the overlay. Without that flush,
-// remeshAll() marks 300+ chunks dirty and the budgeted per-frame update()
-// would dribble the city in chunk-by-chunk over dozens of frames on a now-
-// hidden overlay.
+// Procedural city generation: seed UI (Toolbar) + a loading overlay.
+// generateCity() itself is still synchronous and can take a noticeable
+// moment on the full 384x384 plan, so we show the overlay and yield two
+// animation frames first — a single rAF resolves as a microtask *before*
+// the browser paints, so the overlay would never actually appear on screen
+// otherwise. The mesh rebuild that follows is NOT synchronous: remeshAll()
+// marks 300+ chunks dirty, and ChunkRenderer.flushPending() streams all of
+// them through the mesher worker pool (see MesherScheduler), pumping a few
+// frames' worth of results at a time rather than freezing the main thread.
+// It all still happens behind the (still-visible) overlay, so nothing
+// dribbles into view — we just `await` it before dropping the camera and
+// hiding the overlay.
 // ---------------------------------------------------------------------------
 const overlay = document.createElement('div');
 overlay.className = 'gen-overlay';
@@ -194,7 +194,7 @@ async function runGeneration(seed: string): Promise<void> {
   await nextPaintedFrame();
   currentSeed = seed;
   spawnAboveCity(seed);
-  chunkRenderer.rebuildAllDirty();
+  await chunkRenderer.flushPending();
   entitySystem.rebuild(world, GROUND_SURFACE_Y, seed);
   refreshEnvironmentProbe();
   // Land the player on the street in play mode rather than leaving them
@@ -256,7 +256,7 @@ async function importCity(file: File): Promise<void> {
       atmosphere.setTimeOfDay(meta.timeOfDay);
     }
     spawnAboveImportedCity();
-    chunkRenderer.rebuildAllDirty();
+    await chunkRenderer.flushPending();
     entitySystem.rebuild(world, GROUND_SURFACE_Y, meta.seed);
     refreshEnvironmentProbe();
     // Same rationale as runGeneration: drop the player onto the street

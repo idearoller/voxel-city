@@ -7,8 +7,10 @@ import { World } from '../src/world/World';
 /**
  * Builds a World + ChunkRenderer pair (renderer wired up first, so its
  * dirty-notification listener is attached before any writes) and marks
- * `count` distinct chunks dirty — enough that the per-frame rebuild budget
- * (4) can't drain them in a single update().
+ * `count` distinct chunks dirty — enough that the per-frame apply budget
+ * (4, see MesherScheduler's APPLY_BUDGET_PER_FRAME) can't drain them in a
+ * single update(). No global `Worker` exists in this test environment, so
+ * ChunkRenderer falls back to the synchronous scheduler automatically.
  */
 function rendererWithManyDirtyChunks(count: number): ChunkRenderer {
   const world = new World();
@@ -20,18 +22,18 @@ function rendererWithManyDirtyChunks(count: number): ChunkRenderer {
   return renderer;
 }
 
-describe('ChunkRenderer.rebuildAllDirty', () => {
-  it('drains the entire dirty queue in one call, unlike the budgeted update()', () => {
+describe('ChunkRenderer.flushPending', () => {
+  it('drains the entire dirty queue, unlike the budgeted update()', async () => {
     const renderer = rendererWithManyDirtyChunks(10);
 
     expect(renderer.pendingCount).toBe(10);
 
-    renderer.rebuildAllDirty();
+    await renderer.flushPending();
 
     expect(renderer.pendingCount).toBe(0);
   });
 
-  it('contrasts with update(), which only processes REBUILD_BUDGET_PER_FRAME (4) per call', () => {
+  it('contrasts with update(), which only processes one frame\'s apply budget (4) per call', () => {
     const renderer = rendererWithManyDirtyChunks(10);
 
     renderer.update();
@@ -39,10 +41,10 @@ describe('ChunkRenderer.rebuildAllDirty', () => {
     expect(renderer.pendingCount).toBe(6);
   });
 
-  it('leaves no pending work for a subsequent update() to redundantly process', () => {
+  it('leaves no pending work for a subsequent update() to redundantly process', async () => {
     const renderer = rendererWithManyDirtyChunks(5);
 
-    renderer.rebuildAllDirty();
+    await renderer.flushPending();
     renderer.update();
 
     expect(renderer.pendingCount).toBe(0);

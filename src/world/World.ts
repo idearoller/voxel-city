@@ -2,7 +2,15 @@ import { AIR, getBlock } from './BlockRegistry';
 import { Chunk } from './Chunk';
 import { CHUNK_SIZE, chunkKey, isInBounds, parseChunkKey, worldToChunk, worldToLocal } from './coords';
 
-export type ChunkDirtyListener = (key: string) => void;
+/**
+ * Why a chunk was marked dirty: `'edit'` for a single interactive
+ * `setBlock` (place/remove — wants meshing ASAP), `'bulk'` for a
+ * whole-world `remeshAll()` sweep (post-generate/import — fine to stream
+ * in behind interactive work). Consumers that don't care can ignore the
+ * second argument entirely.
+ */
+export type ChunkDirtyReason = 'edit' | 'bulk';
+export type ChunkDirtyListener = (key: string, reason: ChunkDirtyReason) => void;
 
 /**
  * Sparse voxel world: a Map of allocated chunks plus bounds-aware
@@ -16,13 +24,13 @@ export class World {
     this.listeners.push(listener);
   }
 
-  private markDirty(key: string): void {
+  private markDirty(key: string, reason: ChunkDirtyReason = 'edit'): void {
     const chunk = this.chunks.get(key);
     if (chunk) {
       chunk.dirty = true;
     }
     for (const listener of this.listeners) {
-      listener(key);
+      listener(key, reason);
     }
   }
 
@@ -121,7 +129,7 @@ export class World {
   /** Mark every currently-allocated chunk dirty (call once after bulk setBlockRaw writes). */
   remeshAll(): void {
     for (const key of this.chunks.keys()) {
-      this.markDirty(key);
+      this.markDirty(key, 'bulk');
     }
   }
 
