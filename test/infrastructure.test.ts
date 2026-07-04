@@ -3,6 +3,7 @@ import type { BuildingPlan } from '../src/gen/buildings';
 import { writeBuilding } from '../src/gen/buildings';
 import { District } from '../src/gen/districts';
 import {
+  canElevatorAndStairShaftCoexist,
   planBillboards,
   planBridges,
   planElevatorShafts,
@@ -542,15 +543,41 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     expect(found).toBe(true);
   });
 
-  it("still excludes a stair-shaft tower one voxel short of the coexistence threshold on either axis (11 wide, or 11 deep)", () => {
+  it('still excludes a stair-shaft tower whose footprint touches on both axes (10x10, 11x11, and the 10/11 mixes)', () => {
     const stairKeysForKey = (t: BuildingPlan) => new Set([towerKey(t)]);
-    const narrowWidth = tower({ x: 0, z: 0, width: 11, depth: 12, height: 60 });
-    const narrowDepth = tower({ x: 0, z: 0, width: 12, depth: 11, height: 60 });
-    for (const t of [narrowWidth, narrowDepth]) {
+    const bothTouching = [
+      tower({ x: 0, z: 0, width: 10, depth: 10, height: 60 }),
+      tower({ x: 0, z: 0, width: 11, depth: 11, height: 60 }),
+      tower({ x: 0, z: 0, width: 10, depth: 11, height: 60 }),
+      tower({ x: 0, z: 0, width: 11, depth: 10, height: 60 }),
+    ];
+    for (const t of bothTouching) {
       for (let i = 0; i < 30; i++) {
-        const markers = planElevatorShafts([t], createRng(`elevator-near-threshold-${i}`), stairKeysForKey(t));
-        expect(markers).toHaveLength(0);
+        const markers = planElevatorShafts([t], createRng(`elevator-both-touching-${i}`), stairKeysForKey(t));
+        expect(markers, `width ${t.width}, depth ${t.depth}`).toHaveLength(0);
       }
+    }
+  });
+
+  it('now allows coexistence when only ONE axis clears the threshold — the diagonally-separated case reclaimed from the old both-axes gate', () => {
+    const stairKeysForKey = (t: BuildingPlan) => new Set([towerKey(t)]);
+    // Width touches (10 or 11) but depth clears 12 (or vice versa): the two
+    // 3x3 rects are diagonally offset — no shared wall — so this is now safe.
+    const oneAxisClear = [
+      tower({ x: 0, z: 0, width: 11, depth: 12, height: 60 }),
+      tower({ x: 0, z: 0, width: 12, depth: 11, height: 60 }),
+      tower({ x: 0, z: 0, width: 10, depth: 14, height: 60 }),
+      tower({ x: 0, z: 0, width: 14, depth: 10, height: 60 }),
+    ];
+    for (const t of oneAxisClear) {
+      let found = false;
+      for (let i = 0; i < 30 && !found; i++) {
+        const markers = planElevatorShafts([t], createRng(`elevator-one-axis-clear-${t.width}x${t.depth}-${i}`), stairKeysForKey(t));
+        if (markers.length === 0) continue;
+        found = true;
+        expect(markers[0]!.coexistsWithStairShaft).toBe(true);
+      }
+      expect(found, `width ${t.width}, depth ${t.depth}`).toBe(true);
     }
   });
 
@@ -575,13 +602,22 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     }
   });
 
-  it('never shares a column between the centered stair-shaft footprint and the NW-corner elevator footprint, at the coexistence threshold and above', () => {
-    // 12 is the minimum coexisting footprint (see
-    // `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`'s doc comment); 20 is a
-    // representative larger tower. Both must show zero shared columns and
-    // (per the same doc comment) at least 1 voxel of clearance.
-    for (const size of [12, 13, 20]) {
-      const t = tower({ x: 0, z: 0, width: size, depth: size, height: 60 });
+  it('never shares a column between the centered stair-shaft footprint and the NW-corner elevator footprint, on every footprint the predicate allows', () => {
+    // Square towers at the coexistence threshold and above, plus the newly
+    // reclaimed asymmetric shapes (one axis touching at 10/11, the other
+    // clearing 12) — see `canElevatorAndStairShaftCoexist`'s doc comment.
+    const sizes: Array<[number, number]> = [
+      [12, 12],
+      [13, 13],
+      [20, 20],
+      [10, 14],
+      [14, 10],
+      [11, 12],
+      [12, 11],
+    ];
+    for (const [width, depth] of sizes) {
+      expect(canElevatorAndStairShaftCoexist(width, depth), `width ${width}, depth ${depth}`).toBe(true);
+      const t = tower({ x: 0, z: 0, width, depth, height: 60 });
       const stairColumns = new Set(stairShaftFootprintColumns(t).map((c) => `${c.x},${c.z}`));
       const elevatorColumns: Array<{ x: number; z: number }> = [];
       for (let dx = 0; dx < 3; dx++) {
@@ -589,27 +625,50 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
       }
 
       for (const c of elevatorColumns) {
-        expect(stairColumns.has(`${c.x},${c.z}`), `size ${size}: (${c.x},${c.z})`).toBe(false);
+        expect(stairColumns.has(`${c.x},${c.z}`), `width ${width}, depth ${depth}: (${c.x},${c.z})`).toBe(false);
       }
 
       // Clearance: the nearest stair column must be at least 2 voxels away
-      // (Chebyshev) from the nearest elevator column, i.e. at least 1 empty
-      // voxel of margin between the two 3x3 footprints.
-      let minChebyshev = Infinity;
-      for (const e of elevatorColumns) {
-        for (const s of stairShaftFootprintColumns(t)) {
-          minChebyshev = Math.min(minChebyshev, Math.max(Math.abs(e.x - s.x), Math.abs(e.z - s.z)));
+      // (Chebyshev) from the nearest elevator column whenever BOTH axes
+      // clear the threshold; the diagonally-separated shapes only guarantee
+      // clearance on their one clear axis, not overall Chebyshev distance.
+      const bothAxesClear = width >= 12 && depth >= 12;
+      if (bothAxesClear) {
+        let minChebyshev = Infinity;
+        for (const e of elevatorColumns) {
+          for (const s of stairShaftFootprintColumns(t)) {
+            minChebyshev = Math.min(minChebyshev, Math.max(Math.abs(e.x - s.x), Math.abs(e.z - s.z)));
+          }
         }
+        expect(minChebyshev, `width ${width}, depth ${depth}`).toBeGreaterThanOrEqual(2);
       }
-      expect(minChebyshev, `size ${size}`).toBeGreaterThanOrEqual(2);
     }
+  });
+
+  it('canElevatorAndStairShaftCoexist truth table at the key footprint sizes', () => {
+    // Both axes touching (gap 0 on x AND z): fused-wall risk, stays excluded.
+    expect(canElevatorAndStairShaftCoexist(10, 10)).toBe(false);
+    expect(canElevatorAndStairShaftCoexist(11, 11)).toBe(false);
+    expect(canElevatorAndStairShaftCoexist(10, 11)).toBe(false);
+    expect(canElevatorAndStairShaftCoexist(11, 10)).toBe(false);
+
+    // Exactly one axis clears 12: rects are diagonally offset, no shared
+    // wall — newly reclaimed by this task.
+    expect(canElevatorAndStairShaftCoexist(10, 14)).toBe(true);
+    expect(canElevatorAndStairShaftCoexist(14, 10)).toBe(true);
+    expect(canElevatorAndStairShaftCoexist(11, 12)).toBe(true);
+    expect(canElevatorAndStairShaftCoexist(12, 11)).toBe(true);
+
+    // Both axes clear 12: unchanged from the old gate.
+    expect(canElevatorAndStairShaftCoexist(12, 12)).toBe(true);
+    expect(canElevatorAndStairShaftCoexist(20, 20)).toBe(true);
   });
 
   it("never opens an elevator door into a forbidden (stair-shaft) column when coexisting — picks the next candidate edge instead", () => {
     // Synthetic geometry: a real bridge tower can never get a stair shaft
     // below `BRIDGE_MIN_TOWER_FOOTPRINT` (10), so this exact tiny 4x8
     // footprint never occurs in the real pipeline (the geometric proof in
-    // `ELEVATOR_STAIR_COEXIST_MIN_FOOTPRINT`'s doc comment shows the two
+    // `canElevatorAndStairShaftCoexist`'s doc comment shows the two
     // footprints can never even touch a probe cell at any real footprint).
     // It's built here purely to force the normally-preferred south door
     // edge's cells inside `stairShaftFootprintColumns`' rectangle, isolating

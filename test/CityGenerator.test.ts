@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { BuildingPlan, BuildingTier, DoorSide } from '../src/gen/buildings';
 import { generateCity } from '../src/gen/CityGenerator';
 import { District } from '../src/gen/districts';
-import { planStairShafts, planStairSteps, stairShaftFootprintColumns, type Bridge, type Walkway } from '../src/gen/infrastructure';
+import {
+  canElevatorAndStairShaftCoexist,
+  planStairShafts,
+  planStairSteps,
+  stairShaftFootprintColumns,
+  type Bridge,
+  type Walkway,
+} from '../src/gen/infrastructure';
 import { scanElevatorShafts, type ElevatorShaft } from '../src/elevators/ElevatorScanner';
 import { PLAYER_WIDTH, tryAutoStep, type IsSolidFn } from '../src/player/PlayerCollision';
 import { AIR, ASPHALT, GRAVEL, PARK_GRASS, TREE_TRUNK } from '../src/world/BlockRegistry';
@@ -693,7 +700,7 @@ describe('generateCity playability: elevator + stair coexistence on the same tow
     expect(total).toBeGreaterThan(0);
   });
 
-  it('only ever coexists on towers whose footprint clears the 12x12 minimum, on real generator output across seeds', () => {
+  it('only ever coexists on towers whose footprint satisfies canElevatorAndStairShaftCoexist, on real generator output across seeds', () => {
     let checkedAny = false;
     for (const seed of seeds) {
       const world = new World();
@@ -702,11 +709,28 @@ describe('generateCity playability: elevator + stair coexistence on the same tow
       const shafts = scanElevatorShafts(world);
       for (const { tower } of coexistingTowers(stairTowers, shafts)) {
         checkedAny = true;
-        expect(tower.width).toBeGreaterThanOrEqual(12);
-        expect(tower.depth).toBeGreaterThanOrEqual(12);
+        expect(canElevatorAndStairShaftCoexist(tower.width, tower.depth), `tower ${tower.width}x${tower.depth}`).toBe(true);
       }
     }
     expect(checkedAny).toBe(true);
+  });
+
+  it('reclaims real new coexisting towers vs. the old both-axes->=12 gate, across seeds (non-vacuous relaxation)', () => {
+    const oldGateAllowed = (width: number, depth: number) => width >= 12 && depth >= 12;
+    let totalCoexisting = 0;
+    let newlyReclaimed = 0;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+      for (const { tower } of coexistingTowers(stairTowers, shafts)) {
+        totalCoexisting++;
+        if (!oldGateAllowed(tower.width, tower.depth)) newlyReclaimed++;
+      }
+    }
+    expect(totalCoexisting).toBeGreaterThan(0);
+    expect(newlyReclaimed, 'at least one coexisting tower across these 15 seeds should be a diagonally-separated shape the old gate blocked').toBeGreaterThan(0);
   });
 
   it("never shares a voxel column between a coexisting tower's stair-shaft footprint and its scanned elevator-shaft footprint, across seeds", () => {
@@ -725,6 +749,47 @@ describe('generateCity playability: elevator + stair coexistence on the same tow
             expect(stairColumns.has(`${shaft.wellX + dx},${shaft.wellZ + dz}`)).toBe(false);
           }
         }
+      }
+    }
+    expect(checkedAny).toBe(true);
+  });
+
+  it('whichever axis leaves the two real footprints touching (zero gap), the OTHER axis alone provides >= 1 voxel of real clearance, across seeds', () => {
+    // The invariant this task's relaxation depends on, checked directly
+    // against real scanned/planned column data rather than re-deriving it
+    // analytically: per-axis gap = empty columns strictly between the two
+    // footprints' extents on that axis (0 = touching, never negative — see
+    // `canElevatorAndStairShaftCoexist`'s doc comment for why the two rects
+    // never overlap at any real footprint). At least one axis must clear 1.
+    function axisGap(elevatorMin: number, elevatorMax: number, stairMin: number, stairMax: number): number {
+      if (elevatorMax < stairMin) return stairMin - elevatorMax - 1;
+      return elevatorMin - stairMax - 1;
+    }
+
+    let checkedAny = false;
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+      const stairTowers = stairTowersByKey(bridges);
+      const shafts = scanElevatorShafts(world);
+
+      for (const { tower, shaft } of coexistingTowers(stairTowers, shafts)) {
+        checkedAny = true;
+        const stairColumns = stairShaftFootprintColumns(tower);
+        const stairXs = stairColumns.map((c) => c.x);
+        const stairZs = stairColumns.map((c) => c.z);
+        const elevatorXMin = shaft.wellX - 1;
+        const elevatorXMax = shaft.wellX + 1;
+        const elevatorZMin = shaft.wellZ - 1;
+        const elevatorZMax = shaft.wellZ + 1;
+
+        const gapX = axisGap(elevatorXMin, elevatorXMax, Math.min(...stairXs), Math.max(...stairXs));
+        const gapZ = axisGap(elevatorZMin, elevatorZMax, Math.min(...stairZs), Math.max(...stairZs));
+
+        expect(gapX, `tower ${tower.width}x${tower.depth}`).toBeGreaterThanOrEqual(0);
+        expect(gapZ, `tower ${tower.width}x${tower.depth}`).toBeGreaterThanOrEqual(0);
+        if (gapX === 0) expect(gapZ, `tower ${tower.width}x${tower.depth}: x touches, z must clear`).toBeGreaterThanOrEqual(1);
+        if (gapZ === 0) expect(gapX, `tower ${tower.width}x${tower.depth}: z touches, x must clear`).toBeGreaterThanOrEqual(1);
       }
     }
     expect(checkedAny).toBe(true);
