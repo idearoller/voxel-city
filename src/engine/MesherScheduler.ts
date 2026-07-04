@@ -18,6 +18,17 @@ const APPLY_BUDGET_PER_FRAME = 4;
 /** Cap on concurrent mesher workers: enough to saturate typical machines without starving the main thread's own per-frame work. */
 const MAX_POOL_SIZE = 4;
 
+/**
+ * A chunk whose worker keeps throwing (a "poison" job — e.g. corrupt
+ * snapshot data that crashes the mesher itself) would otherwise be
+ * re-queued by `handleWorkerError` forever, one retry per failure,
+ * indefinitely. This caps how many times any single key gets retried before
+ * it's dropped and logged instead — still meshed as "nothing" (an
+ * unmeshed/invisible chunk is a visible-but-recoverable glitch; a wedged
+ * worker retry loop is not).
+ */
+const MAX_WORKER_RETRIES = 3;
+
 export type MesherResultCallback = (key: string, buffers: ChunkMeshBuffers) => void;
 
 /**
@@ -161,6 +172,8 @@ export class PooledMesherScheduler implements MesherScheduler {
   private readonly chunkByKey = new Map<string, ChunkCoord>();
   private readonly versionByKey = new Map<string, number>();
   private readonly pendingKeys = new Set<string>();
+  /** Consecutive worker-error retries for a key since its last successful (or fresh) request — reset on every `requestMesh`. */
+  private readonly retryCountByKey = new Map<string, number>();
   private resultCallback: MesherResultCallback | null = null;
 
   constructor(
@@ -184,6 +197,7 @@ export class PooledMesherScheduler implements MesherScheduler {
     this.chunkByKey.set(key, chunk);
     this.versionByKey.set(key, (this.versionByKey.get(key) ?? 0) + 1);
     this.pendingKeys.add(key);
+    this.retryCountByKey.delete(key); // a fresh request (new edit) gets its own clean retry budget, not a used-up one from an earlier failure
     this.queue.enqueue(key, priority);
   }
 
@@ -233,6 +247,10 @@ export class PooledMesherScheduler implements MesherScheduler {
     this.freeWorkerIndices.push(workerIndex);
     if (this.versionByKey.get(result.key) === result.version) {
       this.readyResults.push(result);
+      // A job that succeeds clears any earlier failure streak -- a later,
+      // unrelated crash on this same key starts counting from zero again,
+      // rather than inheriting retries spent on a since-resolved problem.
+      this.retryCountByKey.delete(result.key);
     }
     // Stale result (a newer edit arrived while this job was in flight):
     // discarded. `requestMesh` already re-queued this key when it bumped
@@ -246,6 +264,12 @@ export class PooledMesherScheduler implements MesherScheduler {
    * the job that was in flight so it gets retried (possibly by a different
    * worker), rather than that one chunk staying unmeshed forever and,
    * eventually, every worker in the pool wedging on its own bad job.
+   *
+   * A job that keeps throwing (corrupt/poison data, not a transient fluke)
+   * would otherwise retry forever — `MAX_WORKER_RETRIES` caps that: past the
+   * limit the key is dropped (never re-queued, and no longer pending) with a
+   * `console.warn` instead of silently retrying indefinitely. The chunk just
+   * stays unmeshed rather than wedging the pool.
    */
   private handleWorkerError(workerIndex: number, event: ErrorEvent): void {
     const key = this.busyKeyByWorker.get(workerIndex);
@@ -253,8 +277,18 @@ export class PooledMesherScheduler implements MesherScheduler {
     this.freeWorkerIndices.push(workerIndex);
     // eslint-disable-next-line no-console
     console.error('[MesherScheduler] mesher worker failed on chunk', key, event.message, event.error);
+
     if (key !== undefined && this.chunkByKey.has(key)) {
-      this.queue.enqueue(key, 'edit');
+      const retries = (this.retryCountByKey.get(key) ?? 0) + 1;
+      if (retries > MAX_WORKER_RETRIES) {
+        // eslint-disable-next-line no-console
+        console.warn('[MesherScheduler] dropping chunk', key, 'after', retries, 'consecutive worker failures');
+        this.retryCountByKey.delete(key);
+        this.pendingKeys.delete(key);
+      } else {
+        this.retryCountByKey.set(key, retries);
+        this.queue.enqueue(key, 'edit');
+      }
     }
     this.dispatchAvailable();
   }

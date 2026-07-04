@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
+import { ExclusiveGate } from './engine/ExclusiveGate';
 import { EntitySystem } from './entities/EntitySystem';
 import { ElevatorSystem } from './elevators/ElevatorSystem';
 import { Atmosphere } from './engine/Atmosphere';
+import { planAtlasLayout, rasterizeAtlasTexture } from './engine/BillboardAtlas';
+import { BillboardLayer } from './engine/BillboardLayer';
+import { scanBillboardFaces } from './engine/BillboardScanner';
 import { EnvironmentProbe } from './engine/EnvironmentProbe';
 import { updateNeon, roadMaterial } from './engine/Materials';
 import { PostFX } from './engine/PostFX';
@@ -43,6 +47,23 @@ const elevatorSystem = new ElevatorSystem(engine.scene);
 
 const atmosphere = new Atmosphere(engine.scene);
 const rain = new Rain(engine.scene);
+const billboardLayer = new BillboardLayer(engine.scene);
+let currentAtlasTexture: THREE.CanvasTexture | null = null;
+
+/**
+ * Re-derives the atlas + billboard-quad layer for `seed`: the atlas designs
+ * are seeded (see `BillboardAtlas.planAtlasLayout`) so the same city seed
+ * always shows the same ads, and `scanBillboardFaces` re-derives quad
+ * placement from whatever billboard voxels are actually in `world` right
+ * now — works identically after a fresh generation or a `.vxc` import.
+ */
+function rebuildBillboards(seed: string): void {
+  currentAtlasTexture?.dispose();
+  currentAtlasTexture = rasterizeAtlasTexture(planAtlasLayout(seed));
+  billboardLayer.setAtlas(currentAtlasTexture);
+  billboardLayer.rebuild(scanBillboardFaces(world), seed);
+}
+
 const postFX = new PostFX(engine.renderer, engine.scene, engine.camera);
 engine.setComposer(postFX);
 atmosphere.onBloomStrengthChange((strength) => postFX.setBloomStrength(strength));
@@ -197,6 +218,7 @@ async function runGeneration(seed: string): Promise<void> {
   await chunkRenderer.flushPending();
   entitySystem.rebuild(world, GROUND_SURFACE_Y, seed);
   refreshEnvironmentProbe();
+  rebuildBillboards(seed);
   // Land the player on the street in play mode rather than leaving them
   // floating in sandbox fly — the camera is already sitting above the
   // generated spawn point, so this drops straight onto it.
@@ -259,6 +281,7 @@ async function importCity(file: File): Promise<void> {
     await chunkRenderer.flushPending();
     entitySystem.rebuild(world, GROUND_SURFACE_Y, meta.seed);
     refreshEnvironmentProbe();
+    rebuildBillboards(meta.seed);
     // Same rationale as runGeneration: drop the player onto the street
     // (layout-free ASPHALT spawn) in play mode instead of sandbox fly.
     modeManager.enterPlayMode();
@@ -271,9 +294,17 @@ async function importCity(file: File): Promise<void> {
   }
 }
 
+// runGeneration/importCity both rebuild the same World/EntitySystem/environment
+// probe and await a multi-frame chunkRenderer.flushPending() partway through —
+// a user mashing "Generate" (or Generate then Import) before that settles
+// would otherwise start a second run while the first is still touching the
+// same state. One shared gate across both keeps at most one in flight,
+// silently dropping anything that arrives mid-run.
+const generationGate = new ExclusiveGate();
+
 const toolbar = new Toolbar(uiRoot, DEFAULT_SEED);
 toolbar.onGenerateRequest((seed) => {
-  void runGeneration(seed);
+  void generationGate.run(() => runGeneration(seed));
 });
 toolbar.onTogglePause(() => {
   atmosphere.togglePaused();
@@ -285,10 +316,10 @@ toolbar.onToggleRain(() => {
 });
 toolbar.onExportRequest(() => exportCity());
 toolbar.onImportRequest((file) => {
-  void importCity(file);
+  void generationGate.run(() => importCity(file));
 });
 
-void runGeneration(DEFAULT_SEED);
+void generationGate.run(() => runGeneration(DEFAULT_SEED));
 
 let elapsedTime = 0;
 
@@ -311,6 +342,7 @@ engine.start({
     // intended ~4-chunks/frame cap right when the machine is already behind.
     chunkRenderer.update();
     updateNeon(elapsedTime);
+    billboardLayer.update(elapsedTime, atmosphere.nightFactor);
     entitySystem.render();
     elevatorSystem.render();
 

@@ -712,8 +712,17 @@ export function writeStreetlight(world: World, light: Streetlight, groundY: numb
 // ---------------------------------------------------------------------------
 
 const BILLBOARD_CHANCE = 0.08;
-const BILLBOARD_WIDTH = 4;
-const BILLBOARD_HEIGHT = 3;
+/**
+ * Exported: `engine/BillboardScanner.ts` matches this exact WIDTH x HEIGHT
+ * footprint to find real billboard faces by voxel-scanning a `World` alone
+ * (works identically after generation or `.vxc` import, neither of which
+ * keeps a `Billboard[]` around) — see that module's doc comment for why an
+ * exact-size match is enough to disambiguate a billboard from every other
+ * flat neon surface this file writes (shop bands, sign strips, bridge
+ * rails), all of which are shaped differently.
+ */
+export const BILLBOARD_WIDTH = 4;
+export const BILLBOARD_HEIGHT = 3;
 const BILLBOARD_COLORS = [NEON_PINK, NEON_CYAN, NEON_YELLOW, NEON_PURPLE] as const;
 const ALL_SIDES: readonly DoorSide[] = ['north', 'south', 'east', 'west'];
 

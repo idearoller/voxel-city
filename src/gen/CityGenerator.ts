@@ -27,6 +27,7 @@ import {
   writeStairShaft,
   writeStreetlight,
   writeWalkway,
+  type Billboard,
   type Bridge,
   type StairShaft,
   type Walkway,
@@ -48,6 +49,8 @@ export interface GenerationResult {
   bridges: Bridge[];
   stairShafts: StairShaft[];
   walkways: Walkway[];
+  /** Every billboard the generator actually wrote, in `writeBillboard` order — the ground truth `BillboardScanner`'s voxel-scan should reproduce (see `test/BillboardScanner.test.ts`'s oracle test). */
+  billboards: Billboard[];
 }
 
 function paintGround(world: World, layout: CityLayout): void {
@@ -139,13 +142,14 @@ function placeVerticalInfrastructure(
   return { stairShafts, walkways };
 }
 
-/** Streetlights at road intersections and scattered neon billboards on blank facades. */
-function placeStreetFurniture(world: World, layout: CityLayout, buildings: BuildingPlan[], rng: Rng): void {
+/** Streetlights at road intersections and scattered neon billboards on blank facades. Returns the billboards actually written, so callers (and `GenerationResult`) have ground truth to check a voxel re-scan against. */
+function placeStreetFurniture(world: World, layout: CityLayout, buildings: BuildingPlan[], rng: Rng): Billboard[] {
   const streetlights = planStreetlights(layout);
   for (const light of streetlights) writeStreetlight(world, light, GROUND_SURFACE_Y);
 
   const billboards = planBillboards(buildings, rng.fork('billboards'));
   for (const billboard of billboards) writeBillboard(world, billboard);
+  return billboards;
 }
 
 /**
@@ -207,11 +211,11 @@ export function generateCity(world: World, seed: string): GenerationResult {
   // facades, so it must run *before* the bridge stage: a bridge's door carve
   // has to be the last write to its own threshold cells, or a billboard that
   // happens to land there re-solidifies the opening and boxes the stairs in.
-  placeStreetFurniture(world, layout, buildings, rootRng.fork('furniture'));
+  const billboards = placeStreetFurniture(world, layout, buildings, rootRng.fork('furniture'));
   const { stairShafts, walkways } = placeVerticalInfrastructure(world, layout, buildings, bridges, infrastructureRng);
   placeParks(world, layout, rootRng.fork('parks'), walkwayObstacleColumns(walkways));
 
   world.remeshAll();
 
-  return { layout, buildings, bridges, stairShafts, walkways };
+  return { layout, buildings, bridges, stairShafts, walkways, billboards };
 }

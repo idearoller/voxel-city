@@ -193,6 +193,78 @@ describe('PooledMesherScheduler worker failure recovery', () => {
     expect(scheduler.pendingCount).toBe(0);
     errorSpy.mockRestore();
   });
+
+  it('gives up on a job that keeps failing instead of retrying it forever', () => {
+    const world = new World();
+    const { scheduler, workers } = poolOf(world, 1);
+    const worker = workers[0] as FakeWorker;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const applied: string[] = [];
+    scheduler.onResult((key) => applied.push(key));
+
+    scheduler.requestMesh(ORIGIN_KEY, ORIGIN_CHUNK, 'edit');
+    scheduler.update();
+    expect(worker.lastRequest?.key).toBe(ORIGIN_KEY);
+
+    // Fail it repeatedly, past MAX_WORKER_RETRIES (3): every failure up to
+    // the cap re-dispatches the same key; the one past the cap must drop it
+    // instead of queuing yet another retry.
+    for (let i = 0; i < 3; i++) {
+      worker.fail('synthetic worker crash');
+      expect(scheduler.pendingCount).toBe(1); // still retried within budget
+      scheduler.update();
+      expect(worker.lastRequest?.key).toBe(ORIGIN_KEY);
+    }
+
+    worker.fail('synthetic worker crash'); // the 4th consecutive failure -- past the cap
+    expect(scheduler.pendingCount).toBe(0); // dropped, not left pending forever
+    expect(warnSpy).toHaveBeenCalled();
+
+    scheduler.update();
+    expect(applied).toEqual([]); // never resolved -- dropped, not silently applied as empty geometry
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('gives a chunk a fresh retry budget on a brand-new edit rather than inheriting a prior failure streak', () => {
+    const world = new World();
+    const { scheduler, workers } = poolOf(world, 1);
+    const worker = workers[0] as FakeWorker;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const applied: string[] = [];
+    scheduler.onResult((key) => applied.push(key));
+
+    scheduler.requestMesh(ORIGIN_KEY, ORIGIN_CHUNK, 'edit');
+    scheduler.update();
+    for (let i = 0; i < 3; i++) {
+      worker.fail('synthetic worker crash');
+      scheduler.update();
+    }
+    // 3 failures so far -- right at the cap, not yet past it.
+
+    // A genuinely new edit to the same chunk should get its own clean
+    // budget, not immediately be dropped by the old streak.
+    scheduler.requestMesh(ORIGIN_KEY, ORIGIN_CHUNK, 'edit');
+    scheduler.update();
+    for (let i = 0; i < 3; i++) {
+      worker.fail('synthetic worker crash');
+      expect(scheduler.pendingCount).toBe(1);
+      scheduler.update();
+    }
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    worker.respondWithComputedResult();
+    scheduler.update();
+    expect(applied).toEqual([ORIGIN_KEY]);
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('SyncMesherScheduler (fallback path)', () => {
