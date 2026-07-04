@@ -1,6 +1,17 @@
 import * as THREE from 'three';
-import { AUTO_STEP_LIFT, moveAndCollide, tryAutoStep } from './PlayerCollision';
+import {
+  AUTO_STEP_LIFT,
+  isStandingOnSupport,
+  isVoxelInsideSupport,
+  moveAndCollide,
+  tryAutoStep,
+  type IsSolidFn,
+  type SupportSurface,
+} from './PlayerCollision';
 import type { World } from '../world/World';
+
+/** Queries whatever moving/parked support surface (e.g. an elevator platform) currently occupies `feet`'s column, if any. */
+export type SupportProviderFn = (feet: readonly [number, number, number]) => SupportSurface | null;
 
 const WALK_SPEED = 4.5;
 const SPRINT_SPEED = 7;
@@ -40,6 +51,8 @@ export class PlayController {
   private grounded = false;
   /** Remaining vertical offset (world units) being eased out after an auto-step. */
   private stepSmoothRemaining = 0;
+  /** Optional moving-support query (e.g. `ElevatorSystem.supportAt`), wired in by `ModeManager.setSupportProvider`. */
+  private supportProvider: SupportProviderFn | null = null;
 
   private readonly forward = new THREE.Vector3();
   private readonly right = new THREE.Vector3();
@@ -69,6 +82,11 @@ export class PlayController {
 
   getFeet(): readonly [number, number, number] {
     return this.feet;
+  }
+
+  /** Wires (or clears, with `null`) the moving-support query used to carry the player on top of e.g. an elevator platform. */
+  setSupportProvider(provider: SupportProviderFn | null): void {
+    this.supportProvider = provider;
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -109,6 +127,28 @@ export class PlayController {
   }
 
   update(dt: number): void {
+    // Moving-support carry: if standing on e.g. an elevator platform last
+    // tick, snap feet to its *current* exact surface (not "add deltaY to
+    // wherever feet already drifted to" — a fractional platform Y can't be
+    // held exactly by voxel collision alone, see `isVoxelInsideSupport`'s
+    // doc comment, so the snap is what actually eliminates drift) and treat
+    // it exactly like standing on solid ground: velocity zeroed, grounded,
+    // so jump/gravity compose normally from here. `isSolid` additionally
+    // folds the surface's current footprint/Y in as a synthetic solid voxel
+    // — a backstop against fall-through if a rider's feet ever end up
+    // slightly off (e.g. having just landed on the platform from a jump,
+    // before the first snap has happened), not the primary mechanism.
+    const support = this.supportProvider?.(this.feet) ?? null;
+    const riding = support !== null && isStandingOnSupport(this.feet, support);
+    if (riding) {
+      this.feet = [this.feet[0], support!.surfaceY, this.feet[2]];
+      this.velocityY = 0;
+      this.grounded = true;
+    }
+    const isSolid: IsSolidFn = support
+      ? (x, y, z) => this.world.isSolid(x, y, z) || isVoxelInsideSupport(x, y, z, support)
+      : this.isSolid;
+
     this.camera.getWorldDirection(this.forward);
     this.forward.y = 0;
     this.forward.normalize();
@@ -133,7 +173,7 @@ export class PlayController {
     this.velocityY += GRAVITY * dt;
 
     const wasGrounded = this.grounded;
-    const moveResult = moveAndCollide(this.isSolid, this.feet, [wish.x, this.velocityY, wish.z], dt);
+    const moveResult = moveAndCollide(isSolid, this.feet, [wish.x, this.velocityY, wish.z], dt);
 
     const wantedX = wish.x !== 0;
     const wantedZ = wish.z !== 0;
@@ -141,7 +181,7 @@ export class PlayController {
     const blockedZ = wantedZ && moveResult.velocity[2] === 0;
 
     if (wasGrounded && (blockedX || blockedZ)) {
-      const step = tryAutoStep(this.isSolid, this.feet, wish.x * dt, wish.z * dt, wasGrounded);
+      const step = tryAutoStep(isSolid, this.feet, wish.x * dt, wish.z * dt, wasGrounded);
       if (step.stepped) {
         this.feet = step.position;
         this.velocityY = 0;

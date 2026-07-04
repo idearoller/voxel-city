@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
 import { EntitySystem } from './entities/EntitySystem';
+import { ElevatorSystem } from './elevators/ElevatorSystem';
 import { Atmosphere } from './engine/Atmosphere';
 import { EnvironmentProbe } from './engine/EnvironmentProbe';
 import { updateNeon, roadMaterial } from './engine/Materials';
@@ -38,6 +39,7 @@ const engine = new Engine(canvas);
 const world = new World();
 const chunkRenderer = new ChunkRenderer(world, engine.scene);
 const entitySystem = new EntitySystem(engine.scene);
+const elevatorSystem = new ElevatorSystem(engine.scene);
 
 const atmosphere = new Atmosphere(engine.scene);
 const rain = new Rain(engine.scene);
@@ -63,6 +65,12 @@ function refreshEnvironmentProbe(): void {
     environmentRefreshTimeout = undefined;
   }
   environmentProbe.refresh(engine.scene, environmentProbePosition, roadMaterial);
+  // Piggybacks on the same debounce as the wet-street cubemap refresh: a
+  // sandbox edit that breaks (or creates) an elevator shaft is picked up
+  // here rather than on every single place/remove, since a full rescan
+  // walks every allocated chunk (see `ElevatorScanner.scanElevatorShafts`)
+  // and doing that on every click would stutter.
+  elevatorSystem.rebuild(world);
 }
 
 function scheduleEnvironmentRefresh(): void {
@@ -77,6 +85,7 @@ function scheduleEnvironmentRefresh(): void {
 
 const lookControls = new LookControls(engine.camera, canvas);
 const modeManager = new ModeManager(engine.camera, world);
+modeManager.setSupportProvider((feet) => elevatorSystem.supportAt(feet));
 
 const hud = new Hud(uiRoot);
 const palette = new Palette(uiRoot, canvas);
@@ -286,6 +295,10 @@ let elapsedTime = 0;
 engine.start({
   update: (dt) => {
     elapsedTime += dt;
+    // Elevator cars step *before* the player/mode update so a rider's carry
+    // this same tick reflects the platform's freshest position rather than
+    // lagging one tick behind (see `PlayController.update`'s support carry).
+    elevatorSystem.update(dt, modeManager.playerFeet, modeManager.currentMode === 'play');
     modeManager.update(dt);
     atmosphere.update(dt);
     rain.update(dt, engine.camera.position, atmosphere.nightFactor);
@@ -299,6 +312,12 @@ engine.start({
     chunkRenderer.update();
     updateNeon(elapsedTime);
     entitySystem.render();
+    elevatorSystem.render();
+
+    const inElevator =
+      modeManager.currentMode === 'play' &&
+      elevatorSystem.shaftAt(modeManager.playerFeet[0], modeManager.playerFeet[2]) !== null;
+    hud.setElevatorHint(inElevator);
 
     const hit = currentHit();
     if (hit) {

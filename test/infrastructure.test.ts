@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BuildingPlan } from '../src/gen/buildings';
+import { writeBuilding } from '../src/gen/buildings';
 import { District } from '../src/gen/districts';
 import {
   planBillboards,
@@ -478,10 +479,100 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
       const marker = markers[0]!;
       const world = new World();
       writeElevatorShaft(world, marker);
-      // Perimeter is ELEVATOR_SHAFT at every row...
-      expect(world.getBlock(marker.x, t.baseY, marker.z)).toBe(ELEVATOR_SHAFT);
+      // Perimeter is ELEVATOR_SHAFT at a plain mid-shaft row (not a door row)...
+      expect(world.getBlock(marker.x, t.baseY + 10, marker.z)).toBe(ELEVATOR_SHAFT);
       // ...and the center column stays hollow (air), an open shaft well.
       expect(world.getBlock(marker.x + 1, t.baseY + 5, marker.z + 1)).toBe(AIR);
+      written = true;
+    }
+    expect(written).toBe(true);
+  });
+
+  it('carves a rideable ground-to-roof shaft: door openings at every stop, well punched clear through each deck', () => {
+    const t = tower({ x: 0, z: 0, width: 10, depth: 10, height: 40 }); // single-tier (<= SETBACK_MIN_HEIGHT): stops are exactly ground + roof
+    let written = false;
+    for (let i = 0; i < 30 && !written; i++) {
+      const markers = planElevatorShafts([t], createRng(`elevator-stops-${i}`), new Set());
+      if (markers.length === 0) continue;
+      const marker = markers[0]!;
+      const world = new World();
+      // Real footing everywhere `writeElevatorShaft` would run in the actual
+      // pipeline: the citywide ground surface (`CityGenerator.paintGround`)
+      // one row below baseY, and the tower's own shell/roof deck
+      // (`writeBuilding` always runs before elevator shafts in
+      // `placeVerticalInfrastructure`) — `pickDoorEdge` now requires genuine
+      // footing behind a doorway, not just open air.
+      for (let x = -2; x < 12; x++) {
+        for (let z = -2; z < 12; z++) {
+          world.setBlockRaw(x, t.baseY - 1, z, CONCRETE);
+        }
+      }
+      writeBuilding(world, t);
+      writeElevatorShaft(world, marker);
+
+      const wellX = marker.x + 1;
+      const wellZ = marker.z + 1;
+      // Tower is 10x10 with plenty of interior beyond the shaft, so the door
+      // opens on the south edge (see `pickDoorEdge`'s preference order) —
+      // never the north edge, which would open straight onto the tower's own
+      // perimeter wall one cell away (that was the phase-2 defect: an
+      // unenterable/unexitable elevator at every stop).
+      const doorX = marker.x + 1;
+      const doorZ = marker.z + 2;
+      const roofDeckY = t.baseY + t.height;
+
+      // Ground doorway (2 voxels tall) into the shaft's well, plus neon frame posts either side.
+      for (const y of [t.baseY, t.baseY + 1]) {
+        expect(world.getBlock(doorX, y, doorZ)).toBe(AIR);
+        expect(world.getBlock(marker.x, y, marker.z + 2)).toBe(NEON_CYAN);
+        expect(world.getBlock(marker.x + 2, y, marker.z + 2)).toBe(NEON_CYAN);
+      }
+      // And confirm the north edge — the old (broken) door location — was
+      // never touched: still solid shaft wall, not carved open.
+      for (const y of [t.baseY, t.baseY + 1]) {
+        expect(world.getBlock(marker.x + 1, y, marker.z)).toBe(ELEVATOR_SHAFT);
+      }
+
+      // Roof deck: the well is punched clear through the floor, and the roof doorway is carved the same way.
+      expect(world.getBlock(wellX, roofDeckY, wellZ)).toBe(AIR);
+      for (const y of [roofDeckY + 1, roofDeckY + 2]) {
+        expect(world.getBlock(doorX, y, doorZ)).toBe(AIR);
+      }
+
+      written = true;
+    }
+    expect(written).toBe(true);
+  });
+
+  it('never lets the shaft rise past the highest tier whose footprint still contains it', () => {
+    // Upper tier is inset by 3 on every side, well past the shaft's 1-voxel margin from tier0's corner -> shaft can only reach tier0's own boundary.
+    const t = tower({
+      x: 0,
+      z: 0,
+      width: 20,
+      depth: 20,
+      height: 60,
+      tiers: [
+        { yStart: 0, yEnd: 30, x: 0, z: 0, width: 20, depth: 20 },
+        { yStart: 30, yEnd: 60, x: 3, z: 3, width: 14, depth: 14 },
+      ],
+    });
+    let written = false;
+    for (let i = 0; i < 30 && !written; i++) {
+      const markers = planElevatorShafts([t], createRng(`elevator-cap-${i}`), new Set());
+      if (markers.length === 0) continue;
+      const marker = markers[0]!;
+      const world = new World();
+      writeElevatorShaft(world, marker);
+
+      const wellX = marker.x + 1;
+      const wellZ = marker.z + 1;
+      const tier0DeckY = t.baseY + 30;
+
+      // The shaft stops at tier0's own boundary — its well is punched through that deck...
+      expect(world.getBlock(wellX, tier0DeckY, wellZ)).toBe(AIR);
+      // ...but the wall tube never extends up to the (unreachable) true roof at all.
+      expect(world.getBlock(marker.x, t.baseY + t.height, marker.z)).toBe(AIR);
       written = true;
     }
     expect(written).toBe(true);

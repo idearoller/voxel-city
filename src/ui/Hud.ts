@@ -5,6 +5,8 @@ const HINTS: Record<Mode, string> = {
   play: 'WASD walk · Shift sprint · Space jump · LMB remove · RMB place · Tab: sandbox mode',
 };
 
+const ELEVATOR_HINT = 'E: up · Q: down';
+
 /** How long the mode indicator's attention-grabbing flash animation runs. */
 const MODE_FLASH_MS = 500;
 
@@ -12,6 +14,7 @@ const MODE_FLASH_MS = 500;
 export class Hud {
   private readonly modeEl: HTMLElement;
   private readonly hintEl: HTMLElement;
+  private readonly elevatorHintEl: HTMLElement;
   /** null until the first setMode call, so the initial render never flashes. */
   private previousMode: Mode | null = null;
   private flashTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -28,6 +31,11 @@ export class Hud {
     this.hintEl = document.createElement('div');
     this.hintEl.className = 'hud-hint';
     container.appendChild(this.hintEl);
+
+    this.elevatorHintEl = document.createElement('div');
+    this.elevatorHintEl.className = 'hud-elevator-hint';
+    this.elevatorHintEl.textContent = ELEVATOR_HINT;
+    container.appendChild(this.elevatorHintEl);
 
     // Render the initial (pre-generation) sandbox state directly, without
     // going through setMode: that keeps previousMode at null, so the first
@@ -46,6 +54,11 @@ export class Hud {
     this.hintEl.textContent = HINTS[mode];
 
     if (changed) this.flashModeIndicator();
+  }
+
+  /** Shows/hides the "E: up · Q: down" prompt — call every frame with whether the player is currently standing in an elevator shaft. */
+  setElevatorHint(active: boolean): void {
+    this.elevatorHintEl.classList.toggle('visible', active);
   }
 
   /** Briefly re-triggers the mode indicator's CSS flash animation so a Tab switch is noticeable. */

@@ -674,11 +674,14 @@ export function writeBillboard(world: World, billboard: Billboard): void {
 }
 
 // ---------------------------------------------------------------------------
-// Elevator shaft markers (non-functional phase-2 hook)
+// Elevator shafts (functional — see `elevators/ElevatorScanner.ts` for the
+// runtime side that re-derives rideable stops from these blocks)
 // ---------------------------------------------------------------------------
 
 const ELEVATOR_CHANCE = 0.15;
 const ELEVATOR_MIN_HEIGHT = 30;
+/** Rows of solid "penthouse" wall above the topmost stop's floor, enough to carve that stop's own 2-voxel doorway into. */
+const ELEVATOR_HOUSING_ROWS = 2;
 
 export interface ElevatorShaftMarker {
   building: BuildingPlan;
@@ -687,8 +690,7 @@ export interface ElevatorShaftMarker {
 }
 
 /**
- * Rolls an empty 3x3 marker-walled shaft (no functionality yet — a hook for
- * phase-2 vertical transport) for some tall towers. Skips towers that
+ * Rolls an empty 3x3-walled shaft for some tall towers. Skips towers that
  * already got a real stair shaft so the two never overlap.
  */
 export function planElevatorShafts(
@@ -713,16 +715,164 @@ export function planElevatorShafts(
   return markers;
 }
 
+/** True if `tier`'s footprint fully contains the shaft's 3x3 rect at (x, z). */
+function tierContainsShaft(tier: BuildingTier, x: number, z: number): boolean {
+  return tier.x <= x && tier.z <= z && tier.x + tier.width >= x + 3 && tier.z + tier.depth >= z + 3;
+}
+
+/**
+ * A setback tower's upper tiers inset *toward* the shaft's fixed corner
+ * position (see `planElevatorShafts`), so the shaft can only ever rise
+ * through the contiguous prefix of tiers (starting at the ground tier, which
+ * always contains it) that still fully contain its 3x3 footprint. Returns
+ * the absolute Y of the highest deck the shaft can reach — either a
+ * mid-building setback deck (if a later tier no longer contains the shaft)
+ * or the tower's true roof (if every tier does).
+ */
+function elevatorTopDeckY(building: BuildingPlan, x: number, z: number): number {
+  let topY = building.baseY;
+  for (const tier of building.tiers) {
+    if (!tierContainsShaft(tier, x, z)) break;
+    topY = building.baseY + tier.yEnd;
+  }
+  return topY;
+}
+
+/**
+ * Ascending "deck Y" floor levels the shaft serves: the city-wide ground
+ * surface (one below `baseY`, same convention `paintGround` uses) plus every
+ * tier boundary up to and including `elevatorTopDeckY`. Each entry is a solid
+ * floor row; a rider's feet stand at `deckY + 1` (matching `Bridge.level` /
+ * `SkyLobby.y`'s "solid floor at Y, walkable at Y+1" convention elsewhere in
+ * this module).
+ */
+function elevatorDeckYs(building: BuildingPlan, x: number, z: number): number[] {
+  const topDeckY = elevatorTopDeckY(building, x, z);
+  const deckYs = [building.baseY - 1];
+  for (const tier of building.tiers) {
+    const absY = building.baseY + tier.yEnd;
+    if (absY > topDeckY) break;
+    deckYs.push(absY);
+  }
+  return deckYs;
+}
+
+/**
+ * One candidate wall the doorway can be carved through: the ring-cell offset
+ * of the door itself, the two flanking corner offsets that get the neon door
+ * frame, and the offset of the cell one step *beyond* that wall — used to
+ * test whether this edge actually opens onto open interior space.
+ */
+interface DoorEdge {
+  doorOffset: readonly [number, number];
+  frameOffsetA: readonly [number, number];
+  frameOffsetB: readonly [number, number];
+  outwardOffset: readonly [number, number];
+}
+
+/**
+ * The shaft's origin is always `(tier0.x + 1, tier0.z + 1)` (see
+ * `planElevatorShafts`) — one cell in from the tower's own *north* and
+ * *west* walls, but (footprint permitting) several cells short of its
+ * *south* and *east* walls. So the north/west edges always open straight
+ * onto the tower's own perimeter shell (a solid wall one cell away, not
+ * interior), while south/east are the ones that can actually reach the
+ * hollow interior — tried in that preference order, with north/west kept
+ * only as a last-resort fallback (see `pickDoorEdge`).
+ */
+const DOOR_EDGES: readonly DoorEdge[] = [
+  { doorOffset: [1, 2], frameOffsetA: [0, 2], frameOffsetB: [2, 2], outwardOffset: [1, 3] }, // south
+  { doorOffset: [2, 1], frameOffsetA: [2, 0], frameOffsetB: [2, 2], outwardOffset: [3, 1] }, // east
+  { doorOffset: [1, 0], frameOffsetA: [0, 0], frameOffsetB: [2, 0], outwardOffset: [1, -1] }, // north
+  { doorOffset: [0, 1], frameOffsetA: [0, 0], frameOffsetB: [0, 2], outwardOffset: [-1, 1] }, // west
+];
+
+/**
+ * Picks whichever `DOOR_EDGE` actually opens onto real *standable* space at
+ * this specific stop — both doorway rows non-solid one step beyond the
+ * candidate wall, **and** solid footing directly under them (the same
+ * "solid floor, 2 clear voxels above" test used everywhere else a floor is
+ * verified in this codebase, e.g. `writeSteps`). Open-but-unfooted matters:
+ * a narrow tower's roof/deck doesn't extend past its own footprint, so a
+ * door that only checks "is it air out there" can open straight off the
+ * edge of the building into thin air — technically unblocked, but a rider
+ * stepping through it would fall, not "exit."
+ *
+ * Checked per-stop, not once for the whole shaft: an inset setback tier can
+ * be narrow along one axis without being narrow along the other, so the
+ * edge that works for the ground stop is not guaranteed to still have real
+ * footing at a mid-building or roof stop sitting inside a differently-shaped
+ * tier (see `elevatorDeckYs`). Returns null only when every edge fails at
+ * this stop (a degenerately narrow tier): `writeElevatorShaft` then leaves
+ * that one stop doorless rather than the whole shaft, which
+ * `elevators/ElevatorScanner.ts` simply doesn't count as a stop.
+ */
+function pickDoorEdge(world: World, x: number, z: number, doorYs: readonly [number, number]): DoorEdge | null {
+  const floorY = doorYs[0] - 1;
+  for (const edge of DOOR_EDGES) {
+    const [outDx, outDz] = edge.outwardOffset;
+    const hasFooting = world.isSolid(x + outDx, floorY, z + outDz);
+    const isClearAtBothRows = doorYs.every((y) => !world.isSolid(x + outDx, y, z + outDz));
+    if (hasFooting && isClearAtBothRows) return edge;
+  }
+  return null;
+}
+
+/**
+ * Writes a functional elevator shaft: a hollow 3x3-walled tube from the
+ * ground up through `elevatorTopDeckY` (plus a short housing above the
+ * topmost stop to carve its doorway into — like a rooftop machine-room
+ * bulkhead), with the vertical "well" (the shaft's own hollow center column)
+ * kept hollow for the tube's *entire* height — not just at each deck row —
+ * and a 2-voxel-tall neon-framed doorway carved at every stop, through
+ * whichever wall is actually open there (chosen independently per stop; see
+ * `pickDoorEdge`), so the shaft is enterable from — and exits back onto —
+ * the tower's own hollow interior at every floor it serves.
+ * `elevators/ElevatorScanner.ts` re-derives all of this (well position, stop
+ * levels) purely by reading these blocks back — this function's only job is
+ * to lay them out correctly.
+ *
+ * The unconditional full-height well clear (below) matters because the
+ * shaft's fixed corner position can coincide exactly with an *upper* tier's
+ * own wall corner — e.g. an inset-2 setback puts that tier's origin at
+ * `tier0.x + 2, tier0.z + 2`, exactly the well's `(x + 1, z + 1)` — in which
+ * case `writeBuilding` already painted that tier's own shell wall straight
+ * through the well for the whole height of the (non-containing) housing
+ * rows above the shaft's true top stop. Only clearing the well at each
+ * planned deck row (the original approach) missed that: the housing rows
+ * aren't a deck, so the well stayed solid there, `ElevatorScanner` saw a
+ * non-hollow well, and silently dropped the entire shaft.
+ */
 export function writeElevatorShaft(world: World, marker: ElevatorShaftMarker): void {
   const { building, x, z } = marker;
-  for (let ry = 0; ry < building.height; ry++) {
-    const y = building.baseY + ry;
+  const deckYs = elevatorDeckYs(building, x, z);
+  const topDeckY = deckYs[deckYs.length - 1] as number;
+  const wallTopY = topDeckY + ELEVATOR_HOUSING_ROWS;
+
+  for (let y = building.baseY; y <= wallTopY; y++) {
     for (let dx = 0; dx < 3; dx++) {
       for (let dz = 0; dz < 3; dz++) {
         const isShell = dx === 0 || dx === 2 || dz === 0 || dz === 2;
         if (!isShell) continue;
         world.setBlockRaw(x + dx, y, z + dz, ELEVATOR_SHAFT);
       }
+    }
+    world.setBlockRaw(x + 1, y, z + 1, AIR); // well stays hollow through the whole tube, regardless of what any tier's own walls would otherwise put there here
+  }
+
+  for (const deckY of deckYs) {
+    const doorYs: readonly [number, number] = [deckY + 1, deckY + 2];
+    const edge = pickDoorEdge(world, x, z, doorYs);
+    if (!edge) continue; // no wall open at this specific stop (a degenerately narrow tier) -> leave just this stop sealed
+
+    const [doorDx, doorDz] = edge.doorOffset;
+    const [frameADx, frameADz] = edge.frameOffsetA;
+    const [frameBDx, frameBDz] = edge.frameOffsetB;
+
+    for (const doorY of doorYs) {
+      world.setBlockRaw(x + doorDx, doorY, z + doorDz, AIR);
+      world.setBlockRaw(x + frameADx, doorY, z + frameADz, NEON_CYAN); // door-frame posts flanking the opening
+      world.setBlockRaw(x + frameBDx, doorY, z + frameBDz, NEON_CYAN);
     }
   }
 }

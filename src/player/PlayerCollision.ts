@@ -266,6 +266,67 @@ export function tryAutoStep(
 }
 
 /**
+ * A kinematic moving/parked floor a player can stand and ride on — e.g. an
+ * elevator platform (see `elevators/ElevatorSystem.ts`). This is the whole of
+ * PlayerCollision's "moving support surface" extension: everything else
+ * (gravity, jump, grounded detection) composes with it unmodified because
+ * `PlayController` folds the support into its per-tick `isSolid` query (a
+ * synthetic solid voxel slab at the platform's current Y) rather than
+ * teaching this module a second kind of collider.
+ */
+export interface SupportSurface {
+  /** World-space horizontal footprint the platform currently occupies. */
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  /** World Y of the platform's current walkable top surface (feet rest here). */
+  surfaceY: number;
+  /** How far the surface moved vertically since last tick — added to a riding player's feet.y to carry them along. */
+  deltaY: number;
+}
+
+/** Horizontal/vertical tolerance for "close enough to the surface to count as riding it," not just passing through its column. */
+const SUPPORT_RIDE_EPS = 0.01;
+
+/**
+ * True if `feet` is horizontally over `support`'s footprint and vertically
+ * resting on its surface — checked against the surface's *previous* Y
+ * (`surfaceY - deltaY`), not its just-updated one. `feet` was last placed
+ * flush with wherever the surface was *before* this tick's move (either at
+ * rest, or carried there by the previous tick's carry step), so comparing
+ * against the surface's already-moved position would spuriously fail by
+ * exactly `deltaY` every tick the platform is in motion.
+ */
+export function isStandingOnSupport(feet: readonly [number, number, number], support: SupportSurface): boolean {
+  const [x, y, z] = feet;
+  const onFootprint =
+    x + PLAYER_HALF_WIDTH > support.minX &&
+    x - PLAYER_HALF_WIDTH < support.maxX &&
+    z + PLAYER_HALF_WIDTH > support.minZ &&
+    z - PLAYER_HALF_WIDTH < support.maxZ;
+  const previousSurfaceY = support.surfaceY - support.deltaY;
+  return onFootprint && Math.abs(y - previousSurfaceY) <= SUPPORT_RIDE_EPS;
+}
+
+/**
+ * True if voxel (x, y, z) should be treated as solid because it falls inside
+ * `support`'s current one-voxel-thick backstop slab: the row directly under
+ * `floor(surfaceY)` (mirroring how a normal floor's solid voxel sits at
+ * `feetY - 1`), so this slots into an `IsSolidFn` alongside `world.isSolid`.
+ * This is deliberately a *backstop*, not the mechanism that holds a rider
+ * exactly on a fractional (mid-transit) surfaceY — voxel collision can only
+ * resolve against integer row boundaries, so `PlayController` holds riders in
+ * place by directly snapping to `surfaceY` (see its `update()`); this slab
+ * just keeps a fall from ever tunnelling more than one voxel past it.
+ */
+export function isVoxelInsideSupport(x: number, y: number, z: number, support: SupportSurface): boolean {
+  const slabY = Math.floor(support.surfaceY) - 1;
+  if (y !== slabY) return false;
+  return x >= Math.floor(support.minX) && x < Math.ceil(support.maxX) && z >= Math.floor(support.minZ) && z < Math.ceil(support.maxZ);
+}
+
+/**
  * Scans straight down from `topY` at the given xz column for the first solid
  * voxel and returns feet coordinates resting on top of it, or null if the
  * column is solid-free all the way to y=0 (caller should fall back to a

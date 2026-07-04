@@ -82,6 +82,22 @@ export const vehicleGlowMaterial = new THREE.MeshBasicMaterial({
   toneMapped: false,
 });
 
+/**
+ * Elevator platform materials (see `engine/ElevatorRenderer.ts`): a plain
+ * brushed-metal slab plus a steady cyan edge trim, same HDR-boost trick as
+ * the neon channel materials so the trim reads as an always-on indicator
+ * light rather than a painted stripe.
+ */
+export const elevatorPlatformMaterial = new THREE.MeshStandardMaterial({
+  color: 0x8c9098,
+  roughness: 0.4,
+  metalness: 0.7,
+});
+export const elevatorTrimMaterial = new THREE.MeshBasicMaterial({
+  color: new THREE.Color(0x40e8ff).multiplyScalar(NEON_HDR_BOOST),
+  toneMapped: false,
+});
+
 export function updateNeon(time: number): void {
   for (let channel = 0; channel < neonMaterials.length; channel++) {
     const material = neonMaterials[channel] as THREE.MeshBasicMaterial;

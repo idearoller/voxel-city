@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { FlyController } from './FlyController';
-import { PlayController } from './PlayController';
+import { PlayController, type SupportProviderFn } from './PlayController';
 import { findSpawnFeet } from './PlayerCollision';
 import { WORLD_SIZE_Y } from '../world/coords';
 import type { World } from '../world/World';
@@ -57,6 +57,11 @@ export class ModeManager {
 
   onModeChange(listener: ModeChangeListener): void {
     this.listeners.push(listener);
+  }
+
+  /** Forwards to the play controller's moving-support wiring (see `PlayController.setSupportProvider`) — e.g. `ElevatorSystem.supportAt`. */
+  setSupportProvider(provider: SupportProviderFn | null): void {
+    this.playController.setSupportProvider(provider);
   }
 
   update(dt: number): void {
