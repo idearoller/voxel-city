@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { AudioSystem, type AudioContextFactory } from './audio/AudioSystem';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
 import { ExclusiveGate } from './engine/ExclusiveGate';
@@ -48,6 +49,43 @@ const elevatorSystem = new ElevatorSystem(engine.scene);
 const atmosphere = new Atmosphere(engine.scene);
 const rain = new Rain(engine.scene);
 const billboardLayer = new BillboardLayer(engine.scene);
+
+// ---------------------------------------------------------------------------
+// Ambient audio: procedural rain/neon-hum/traffic beds, 100% synthesized via
+// WebAudio (see src/audio/ — no audio files). `createAudioContext` degrades
+// to null (never throws) on browsers without WebAudio at all; `AudioSystem`
+// itself no-ops every method until that succeeds. Actual unlock happens on
+// the first click/keydown below, per the browser autoplay policy.
+// ---------------------------------------------------------------------------
+const createAudioContext: AudioContextFactory = () => {
+  const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  try {
+    return new Ctor();
+  } catch {
+    return null;
+  }
+};
+
+function readLocalStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+const audioSystem = new AudioSystem(createAudioContext, readLocalStorage());
+
+function unlockAudio(): void {
+  audioSystem.unlock();
+}
+window.addEventListener('click', unlockAudio);
+window.addEventListener('keydown', unlockAudio);
+
+document.addEventListener('visibilitychange', () => {
+  audioSystem.setHidden(document.hidden);
+});
 let currentAtlasTexture: THREE.CanvasTexture | null = null;
 
 /**
@@ -117,6 +155,12 @@ modeManager.onModeChange((mode) => hud.setMode(mode));
 const fpsCounter = import.meta.env.DEV ? new FpsCounter(uiRoot) : null;
 
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyM') return;
+  audioSystem.toggleMuted();
+  toolbar.setMuted(audioSystem.isMuted);
+});
 
 // ---------------------------------------------------------------------------
 // Target-block highlight: a thin edge box snapped to whatever voxel the
@@ -314,6 +358,11 @@ toolbar.onToggleRain(() => {
   rain.toggle();
   toolbar.setRainEnabled(rain.enabled);
 });
+toolbar.onToggleMute(() => {
+  audioSystem.toggleMuted();
+  toolbar.setMuted(audioSystem.isMuted);
+});
+toolbar.setMuted(audioSystem.isMuted);
 toolbar.onExportRequest(() => exportCity());
 toolbar.onImportRequest((file) => {
   void generationGate.run(() => importCity(file));
@@ -334,6 +383,11 @@ engine.start({
     atmosphere.update(dt);
     rain.update(dt, engine.camera.position, atmosphere.nightFactor);
     entitySystem.update(dt, engine.camera.position.x, engine.camera.position.y, engine.camera.position.z);
+    audioSystem.update({
+      timeOfDay: atmosphere.currentTimeOfDay,
+      rainIntensity: rain.enabled ? 1 : 0,
+      isPlayMode: modeManager.currentMode === 'play',
+    });
   },
   render: () => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):

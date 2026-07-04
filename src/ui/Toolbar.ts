@@ -18,10 +18,12 @@ export class Toolbar {
   private readonly seedInput: HTMLInputElement;
   private readonly pauseButton: HTMLButtonElement;
   private readonly rainButton: HTMLButtonElement;
+  private readonly muteButton: HTMLButtonElement;
   private readonly importFileInput: HTMLInputElement;
   private readonly listeners: GenerateRequestListener[] = [];
   private readonly pauseListeners: ToggleListener[] = [];
   private readonly rainListeners: ToggleListener[] = [];
+  private readonly muteListeners: ToggleListener[] = [];
   private readonly exportListeners: ExportRequestListener[] = [];
   private readonly importListeners: ImportRequestListener[] = [];
 
@@ -80,6 +82,16 @@ export class Toolbar {
     });
     this.root.appendChild(this.rainButton);
 
+    this.muteButton = document.createElement('button');
+    this.muteButton.type = 'button';
+    this.muteButton.className = 'toolbar-button';
+    this.muteButton.textContent = '\u{1F50A} SOUND'; // speaker, default unmuted
+    this.muteButton.title = 'Mute/unmute ambient audio (M)';
+    this.muteButton.addEventListener('click', () => {
+      for (const listener of this.muteListeners) listener();
+    });
+    this.root.appendChild(this.muteButton);
+
     const exportButton = document.createElement('button');
     exportButton.type = 'button';
     exportButton.className = 'toolbar-button';
@@ -125,6 +137,10 @@ export class Toolbar {
     this.rainListeners.push(listener);
   }
 
+  onToggleMute(listener: ToggleListener): void {
+    this.muteListeners.push(listener);
+  }
+
   onExportRequest(listener: ExportRequestListener): void {
     this.exportListeners.push(listener);
   }
@@ -143,6 +159,12 @@ export class Toolbar {
   /** Reflects current rain-enabled state onto the toggle button. */
   setRainEnabled(enabled: boolean): void {
     this.rainButton.classList.toggle('toolbar-button-active', !enabled);
+  }
+
+  /** Reflects current audio-muted state onto the toggle button. */
+  setMuted(muted: boolean): void {
+    this.muteButton.textContent = muted ? '\u{1F507} SOUND' : '\u{1F50A} SOUND'; // muted-speaker vs speaker
+    this.muteButton.classList.toggle('toolbar-button-active', muted);
   }
 
   /** Reflects the current city seed onto the seed input — used after a `.vxc` import restores a different seed. */

@@ -45,6 +45,7 @@ is no backend and no network calls once the page loads.
 | Select block | Number keys 1-9/0, or mouse wheel | same |
 | Elevator up / down | — | E / Q (while standing in a shaft) |
 | Switch mode | Tab | Tab |
+| Mute / unmute ambient audio | M | M |
 
 Play mode adds gravity, collision, and single-voxel auto-stepping (like
 climbing stairs); sandbox mode ignores collision entirely so you can fly
@@ -52,7 +53,9 @@ anywhere to build.
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
-**☔ RAIN** to toggle rain, **⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
+**☔ RAIN** to toggle rain, **🔊 SOUND** to mute/unmute ambient audio (rain,
+neon hum, distant traffic — all synthesized via WebAudio, no audio files),
+**⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
 
 Press **F3** to toggle a small FPS readout (dev builds only).
 
@@ -102,6 +105,12 @@ src/
               traffic in sky lanes, navigation grid, spawning.
   elevators/  Elevator-shaft scanning, car simulation, and the E/Q call
               interaction while a player stands in a shaft.
+  audio/      Procedural ambient audio (rain bed, neon hum, distant traffic)
+              synthesized entirely via WebAudio — no audio files. Mix curve
+              (day-night + rain -> per-bus gain) and mute persistence are
+              pure/unit-testable; graph-building takes an injected
+              AudioContext-like port so it's testable without a real
+              AudioContext. Autoplay-unlocked from the first click/keydown.
   io/         Serializer.ts — the `.vxc` binary export/import format. Pure
               data in/out (ArrayBuffer <-> World), no DOM/Three.js.
   ui/         Plain DOM overlays: Toolbar, Hud, Palette, ErrorToast,
