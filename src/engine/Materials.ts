@@ -64,6 +64,24 @@ const NEON_HDR_BOOST = 2.5;
  * vertex colors, so this is 4 uniform-sized updates animating every neon
  * voxel in the scene, however many chunks they're spread across.
  */
+/**
+ * Entity (NPC/vehicle) materials — dark cyberpunk silhouettes with a small
+ * always-on neon accent that blooms at night, same HDR-boost trick as the
+ * neon channel materials above. Kept separate from `neonMaterials` since
+ * those four are semantically tied to specific voxel colors/flicker
+ * patterns (see `neon.ts`); entity accents are steady, not animated.
+ */
+export const pedestrianBodyMaterial = new THREE.MeshLambertMaterial({ color: 0x0c0c10 });
+export const pedestrianAccentMaterial = new THREE.MeshBasicMaterial({
+  color: new THREE.Color(0x40e8ff).multiplyScalar(NEON_HDR_BOOST),
+  toneMapped: false,
+});
+export const vehicleBodyMaterial = new THREE.MeshLambertMaterial({ color: 0x16161c });
+export const vehicleGlowMaterial = new THREE.MeshBasicMaterial({
+  color: new THREE.Color(0xff2d6a).multiplyScalar(NEON_HDR_BOOST),
+  toneMapped: false,
+});
+
 export function updateNeon(time: number): void {
   for (let channel = 0; channel < neonMaterials.length; channel++) {
     const material = neonMaterials[channel] as THREE.MeshBasicMaterial;

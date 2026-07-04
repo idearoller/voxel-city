@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
+import { EntitySystem } from './entities/EntitySystem';
 import { Atmosphere } from './engine/Atmosphere';
 import { EnvironmentProbe } from './engine/EnvironmentProbe';
 import { updateNeon, roadMaterial } from './engine/Materials';
@@ -36,6 +37,7 @@ const engine = new Engine(canvas);
 
 const world = new World();
 const chunkRenderer = new ChunkRenderer(world, engine.scene);
+const entitySystem = new EntitySystem(engine.scene);
 
 const atmosphere = new Atmosphere(engine.scene);
 const rain = new Rain(engine.scene);
@@ -184,6 +186,7 @@ async function runGeneration(seed: string): Promise<void> {
   currentSeed = seed;
   spawnAboveCity(seed);
   chunkRenderer.rebuildAllDirty();
+  entitySystem.rebuild(world, GROUND_SURFACE_Y, seed);
   refreshEnvironmentProbe();
   // Land the player on the street in play mode rather than leaving them
   // floating in sandbox fly — the camera is already sitting above the
@@ -245,6 +248,7 @@ async function importCity(file: File): Promise<void> {
     }
     spawnAboveImportedCity();
     chunkRenderer.rebuildAllDirty();
+    entitySystem.rebuild(world, GROUND_SURFACE_Y, meta.seed);
     refreshEnvironmentProbe();
     // Same rationale as runGeneration: drop the player onto the street
     // (layout-free ASPHALT spawn) in play mode instead of sandbox fly.
@@ -285,6 +289,7 @@ engine.start({
     modeManager.update(dt);
     atmosphere.update(dt);
     rain.update(dt, engine.camera.position, atmosphere.nightFactor);
+    entitySystem.update(dt, engine.camera.position.x, engine.camera.position.z);
   },
   render: () => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):
@@ -293,6 +298,7 @@ engine.start({
     // intended ~4-chunks/frame cap right when the machine is already behind.
     chunkRenderer.update();
     updateNeon(elapsedTime);
+    entitySystem.render();
 
     const hit = currentHit();
     if (hit) {
