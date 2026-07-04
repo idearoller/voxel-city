@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildNavGrid, isElevatedWalkableCell } from '../src/entities/NavGrid';
-import { createPedestrianAt, stepPedestrian } from '../src/entities/Pedestrian';
+import { buildNavGrid, isElevatedWalkableCell, isSidewalkCell } from '../src/entities/NavGrid';
+import { createPedestrianAt, stepPedestrian, type StairCommitment } from '../src/entities/Pedestrian';
 import { GROUND_SURFACE_Y, generateCity } from '../src/gen/CityGenerator';
 import { WALKWAY_Y } from '../src/gen/infrastructure';
 import { createRng } from '../src/gen/rng';
@@ -55,7 +55,17 @@ describe('pedestrians walking real generated elevated decks', () => {
     expect(bridgesWalked).toBeGreaterThan(0);
   });
 
-  it('stays on a real walkway deck for many ticks: never off-deck, never at ground level, always over a solid floor', () => {
+  /**
+   * Since a walkway pedestrian may now (see `Pedestrian.ts`'s
+   * `TAKE_STAIRS_CHANCE`) detour down a real stair to the street and back,
+   * "stays on the deck" is no longer the invariant to prove here — see
+   * `StairPedestrian.test.ts` for the dedicated stair-crossing soak. What
+   * must still hold at every tick, on every real generated walkway, is: never
+   * floating (feet always on the deck, a stair step, or real ground
+   * sidewalk) and never clipping (mid-stair `y` never leaves the envelope
+   * between the step just departed and the one being sought).
+   */
+  it('never floats or clips while wandering a real walkway (on the deck, on its stairs, or on the ground below), across many ticks', () => {
     let walkwaysWalked = 0;
 
     for (const seed of SEEDS) {
@@ -78,9 +88,22 @@ describe('pedestrians walking real generated elevated decks', () => {
       for (let i = 0; i < TICKS; i++) {
         stepPedestrian(ped, 1 / 60, grid, rng);
         expect(ped.alive).toBe(true);
-        expect(ped.y).toBe(WALKWAY_Y);
-        expect(isElevatedWalkableCell(grid, levelIndex, ped.cellX, ped.cellZ)).toBe(true);
-        expect(world.getBlock(ped.cellX, WALKWAY_Y, ped.cellZ)).toBe(METAL);
+
+        if (ped.stair) {
+          const stair = ped.stair as StairCommitment;
+          const cur = stair.link.steps[stair.index] as { y: number };
+          const prev = stair.link.steps[stair.index - stair.direction] as { y: number };
+          const lo = Math.min(cur.y, prev.y);
+          const hi = Math.max(cur.y, prev.y);
+          expect(ped.y).toBeGreaterThanOrEqual(lo);
+          expect(ped.y).toBeLessThanOrEqual(hi);
+        } else if (ped.y === WALKWAY_Y) {
+          expect(isElevatedWalkableCell(grid, levelIndex, ped.cellX, ped.cellZ)).toBe(true);
+          expect(world.getBlock(ped.cellX, WALKWAY_Y, ped.cellZ)).toBe(METAL);
+        } else {
+          expect(ped.y).toBe(GROUND_SURFACE_Y);
+          expect(isSidewalkCell(grid, ped.cellX, ped.cellZ)).toBe(true);
+        }
       }
       walkwaysWalked++;
     }

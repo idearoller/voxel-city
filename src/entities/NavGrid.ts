@@ -17,10 +17,15 @@
  * than depending on `GenerationResult`'s `bridges`/`walkways` plans (which
  * don't exist after a `.vxc` import). Only these known rows are scanned, not
  * every Y in the world — see `buildElevatedLevels`.
+ *
+ * `stairLinks` connects the ground row to an elevated level through an
+ * ordered run of stair-tread cells, derived the same voxel-only way (see
+ * `deriveStairLinks`) rather than from `infrastructure.ts`'s `Walkway`/
+ * `StairShaft` plans — so it survives a `.vxc` import too.
  */
 
 import { SKY_LEVELS, WALKWAY_Y } from '../gen/infrastructure';
-import { AIR, ASPHALT, GRAVEL, METAL, SIDEWALK } from '../world/BlockRegistry';
+import { AIR, ASPHALT, CONCRETE, GRAVEL, METAL, SIDEWALK } from '../world/BlockRegistry';
 import type { World } from '../world/World';
 
 /** Every Y row a known elevated pedestrian deck can sit on, citywide. */
@@ -41,6 +46,26 @@ export interface ElevatedLevel {
   readonly cells: ReadonlyArray<{ readonly x: number; readonly z: number }>;
 }
 
+/**
+ * A single ground<->deck stair connection, every cell along its run from
+ * the street landing to the deck landing, inclusive. `steps[0]` is always a
+ * real ground-level sidewalk/gravel cell (`y === groundY`); `steps[last]` is
+ * always a real elevated-deck cell (`y === levelY`, matching one of
+ * `NavGrid.elevatedLevels`). Every entry between is one riser, and `y`
+ * increases by exactly 1 from one entry to the next, with a single
+ * exception: the very last transition (second-to-last entry, the top tread,
+ * into `steps[last]`, the deck) is a flat lateral step, not a riser —
+ * `writeSteps`' top tread always lands flush with the deck it leads to, both
+ * at `y === levelY` (see `deriveStairLinks`'s doc comment). A pedestrian's
+ * stair walk (and this suite's tests) both lean on this "+1 except the very
+ * last hop" invariant.
+ */
+export interface StairLink {
+  /** The connected elevated level's own `y` (matches `elevatedLevels[].y`). */
+  readonly levelY: number;
+  readonly steps: ReadonlyArray<{ readonly x: number; readonly y: number; readonly z: number }>;
+}
+
 export interface NavGrid {
   readonly width: number;
   readonly depth: number;
@@ -54,6 +79,8 @@ export interface NavGrid {
   readonly flowZ: Int8Array;
   /** One entry per known elevated deck row that has any walkable cells at all (see `ELEVATED_DECK_LEVELS`). */
   readonly elevatedLevels: readonly ElevatedLevel[];
+  /** Every ground<->deck stair connection found in `world` (see `deriveStairLinks`). Few — stairs are rare citywide. */
+  readonly stairLinks: readonly StairLink[];
 }
 
 function cellIndex(width: number, x: number, z: number): number {
@@ -238,6 +265,136 @@ function buildElevatedLevel(world: World, width: number, depth: number, y: numbe
   return { y, walkable, cells };
 }
 
+/** The 4 orthogonal (dx, dz) neighbor offsets a stair chain can step through. */
+const STAIR_NEIGHBOR_OFFSETS: readonly [number, number][] = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+/** Upper bound on how many risers a single stair chain may have before it's treated as malformed rather than walked forever — generously above the tallest real riser count (`SKY_LEVELS`' 90 minus `groundY`, well under 100). */
+const MAX_STAIR_RISERS = 128;
+
+/**
+ * True if (x, y, z) is a single stair tread — the exact voxel shape
+ * `infrastructure.ts`'s `writeSteps` lays down for every riser of a walkway
+ * or spiral stair shaft: a solid CONCRETE block with 2 clear voxels of
+ * headroom directly above it. This alone doesn't distinguish a stair tread
+ * from an ordinary CONCRETE floor slab (building tiers, roofs and sky lobbies
+ * all use the same block with the same headroom) — what actually
+ * disambiguates a stair is `traceStairDown`'s chain requirement: a floor
+ * slab's neighboring cells sit at the *same* y, never one row down, so a
+ * flat floor never produces the monotonic descending chain a real stair does.
+ */
+function isStairTread(world: World, x: number, y: number, z: number): boolean {
+  return world.getBlock(x, y, z) === CONCRETE && world.getBlock(x, y + 1, z) === AIR && world.getBlock(x, y + 2, z) === AIR;
+}
+
+/**
+ * Walks a stair chain downward one single-voxel riser at a time, starting
+ * from a candidate top tread immediately outside a deck's edge (same y as
+ * the deck itself — see `deriveStairLinks`'s doc comment for why the top
+ * tread always lands flush with the deck). At each hop, the 3 neighbors other
+ * than the one just arrived from are checked for the next tread one row
+ * down; the walk only counts as a real, complete stair if it terminates on a
+ * genuine ground-level sidewalk/gravel cell (`sidewalk[...] === 1` at
+ * `groundY`) — a chain that dead-ends (no neighbor continues it, e.g. a
+ * building's interior floor slab, which never keeps dropping one adjacent
+ * riser at a time all the way to real sidewalk) or exceeds
+ * `MAX_STAIR_RISERS` is discarded (`null`), not treated as a shorter stair.
+ *
+ * Returns the full chain from the top tread down to (and including) the
+ * ground landing cell, in that descending order.
+ */
+function traceStairDown(
+  world: World,
+  grid: Pick<NavGrid, 'width' | 'depth' | 'groundY' | 'sidewalk'>,
+  topX: number,
+  topY: number,
+  topZ: number,
+  cameFromX: number,
+  cameFromZ: number,
+): Array<{ x: number; y: number; z: number }> | null {
+  const chain: Array<{ x: number; y: number; z: number }> = [{ x: topX, y: topY, z: topZ }];
+  let x = topX;
+  let y = topY;
+  let z = topZ;
+  let prevX = cameFromX;
+  let prevZ = cameFromZ;
+
+  while (chain.length <= MAX_STAIR_RISERS) {
+    let advanced = false;
+
+    for (const [dx, dz] of STAIR_NEIGHBOR_OFFSETS) {
+      const nx = x + dx;
+      const nz = z + dz;
+      if (nx === prevX && nz === prevZ) continue; // never step back the way we just came
+
+      const ny = y - 1;
+      if (ny === grid.groundY && inBounds(grid, nx, nz) && grid.sidewalk[cellIndex(grid.width, nx, nz)] === 1) {
+        chain.push({ x: nx, y: ny, z: nz });
+        return chain; // reached a genuine ground landing -- complete stair
+      }
+      if (isStairTread(world, nx, ny, nz)) {
+        chain.push({ x: nx, y: ny, z: nz });
+        prevX = x;
+        prevZ = z;
+        x = nx;
+        y = ny;
+        z = nz;
+        advanced = true;
+        break;
+      }
+    }
+
+    if (!advanced) return null; // dead end -- not a real ground-connected stair
+  }
+  return null; // too long to be a real stair -- treat as malformed rather than risk an unbounded walk
+}
+
+/**
+ * Derives every ground<->deck stair connection in `world`, purely from
+ * voxel geometry (same rebuild/import-safe convention as
+ * `buildElevatedLevel` — no dependency on `GenerationResult`'s
+ * `walkways`/`stairShafts` plans, which don't survive a `.vxc` import).
+ *
+ * For every elevated deck cell's 4 neighbors that are NOT themselves part of
+ * the deck, a neighbor is a stair's top tread if it's a `isStairTread` cell
+ * at the *same* y as the deck (both `writeSteps`' walkway run and its spiral
+ * shaft run always place their very last riser at `topY === level`, flush
+ * with the deck it leads to — one continuous climb, not a separate final
+ * hop). From there, `traceStairDown` walks the chain back to a real ground
+ * landing; only completed chains become a `StairLink`.
+ */
+function deriveStairLinks(world: World, grid: Pick<NavGrid, 'width' | 'depth' | 'groundY' | 'sidewalk' | 'elevatedLevels'>): StairLink[] {
+  const links: StairLink[] = [];
+  const seenTreads = new Set<string>();
+
+  for (const level of grid.elevatedLevels) {
+    for (const cell of level.cells) {
+      for (const [dx, dz] of STAIR_NEIGHBOR_OFFSETS) {
+        const nx = cell.x + dx;
+        const nz = cell.z + dz;
+        if (inBounds(grid, nx, nz) && level.walkable[cellIndex(grid.width, nx, nz)] === 1) continue; // still on the deck itself
+        if (!isStairTread(world, nx, level.y, nz)) continue;
+
+        const key = `${level.y},${nx},${nz}`;
+        if (seenTreads.has(key)) continue;
+        seenTreads.add(key);
+
+        const descending = traceStairDown(world, grid, nx, level.y, nz, cell.x, cell.z);
+        if (!descending) continue;
+
+        const steps = [{ x: cell.x, y: level.y, z: cell.z }, ...descending].reverse();
+        links.push({ levelY: level.y, steps });
+      }
+    }
+  }
+
+  return links;
+}
+
 /**
  * Scans `world`'s ground-surface row (`groundY`) over a `width` x `depth`
  * footprint into sidewalk/road boolean grids plus a road flow field, then
@@ -269,5 +426,6 @@ export function buildNavGrid(world: World, width: number, depth: number, groundY
   const elevatedLevels = ELEVATED_DECK_LEVELS.map((y) => buildElevatedLevel(world, width, depth, y)).filter(
     (level) => level.walkable.some((cell) => cell === 1),
   );
-  return { width, depth, groundY, sidewalk, road, flowX, flowZ, elevatedLevels };
+  const stairLinks = deriveStairLinks(world, { width, depth, groundY, sidewalk, elevatedLevels });
+  return { width, depth, groundY, sidewalk, road, flowX, flowZ, elevatedLevels, stairLinks };
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildNavGrid, isElevatedWalkableCell, isRoadCell, isSidewalkCell } from '../src/entities/NavGrid';
 import { GROUND_SURFACE_Y, generateCity } from '../src/gen/CityGenerator';
 import { WALKWAY_Y, type Bridge, type Walkway } from '../src/gen/infrastructure';
-import { ASPHALT, CONCRETE, GRAVEL, SIDEWALK } from '../src/world/BlockRegistry';
+import { AIR, ASPHALT, CONCRETE, GRAVEL, SIDEWALK } from '../src/world/BlockRegistry';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../src/world/coords';
 import { World } from '../src/world/World';
 
@@ -256,5 +256,123 @@ describe('buildNavGrid elevated levels (real generator output)', () => {
     }
 
     expect(levelsChecked).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stairLinks, derived from real generator output. `deriveStairLinks` walks a
+// monotonic chain of stair-tread voxels purely by content (see NavGrid.ts's
+// own doc comment for why that's what disambiguates a real stair from an
+// ordinary CONCRETE floor slab), so these tests hold it to the same "prove it
+// against real generated cities" bar as the elevated-level tests above,
+// cross-checked against `planWalkways`' own `stairSteps` plan (test-only —
+// production code never reads it, only the voxels it wrote).
+// ---------------------------------------------------------------------------
+
+describe('buildNavGrid stairLinks (real generator output)', () => {
+  const seeds = Array.from({ length: 10 }, (_, i) => `stair-links-${i}`);
+
+  /**
+   * Whether `link`'s risers are exactly `walkway`'s own real riser sequence
+   * (ignoring `link`'s extra ground-landing entry at index 0, and its extra
+   * deck-landing entry at the very end -- `deriveStairLinks` adds both of
+   * those on top of the risers `writeSteps` wrote, which is exactly
+   * `walkway.stairSteps`). Matching this way, rather than by the ground
+   * landing cell, is deliberate: a stair's real riser geometry is the one
+   * thing `planWalkways` fully determines, but its ground *landing* cell is
+   * not uniquely determined by design -- the sidewalk at the stair's base is
+   * often walkable on more than one side, and `deriveStairLinks` picks
+   * whichever real sidewalk neighbor it finds first (any of them is a
+   * legitimate place to start climbing), not necessarily the one directly
+   * "behind" the bottom riser.
+   */
+  function linkMatchesWalkwayRisers(link: { steps: ReadonlyArray<{ x: number; y: number; z: number }> }, walkway: Walkway): boolean {
+    const risers = link.steps.slice(1, link.steps.length - 1);
+    if (risers.length !== walkway.stairSteps.length) return false;
+    return risers.every((s, i) => {
+      const real = walkway.stairSteps[i] as { x: number; y: number; z: number };
+      return s.x === real.x && s.y === real.y && s.z === real.z;
+    });
+  }
+
+  it('finds every real walkway stair whose base sits on real sidewalk, its steps monotonic in y and every step properly footed', () => {
+    let linksChecked = 0;
+    let walkwaysMatched = 0;
+
+    for (const seed of seeds) {
+      const world = new World();
+      const { walkways } = generateCity(world, seed);
+      const grid = buildNavGrid(world, WORLD_SIZE_X, WORLD_SIZE_Z, GROUND_SURFACE_Y);
+
+      const walkwaysWithStairs = walkways.filter((w) => w.stairSteps.length > 0);
+      // Never more links than real walkways -- a link only exists per genuine stair.
+      expect(grid.stairLinks.length).toBeLessThanOrEqual(walkwaysWithStairs.length);
+
+      for (const walkway of walkwaysWithStairs) {
+        if (grid.stairLinks.some((link) => linkMatchesWalkwayRisers(link, walkway))) walkwaysMatched++;
+      }
+
+      for (const link of grid.stairLinks) {
+        expect(link.levelY).toBe(WALKWAY_Y);
+
+        // Monotonic in y, one riser at a time, ground cell first -- except the
+        // very last hop (top tread -> deck), which is a flat lateral step onto
+        // the deck's own y (see `StairLink`'s doc comment).
+        expect(link.steps[0]?.y).toBe(GROUND_SURFACE_Y);
+        expect(link.steps[link.steps.length - 1]?.y).toBe(WALKWAY_Y);
+        for (let i = 1; i < link.steps.length - 1; i++) {
+          expect(link.steps[i]?.y).toBe((link.steps[i - 1]?.y as number) + 1);
+        }
+        expect(link.steps[link.steps.length - 1]?.y).toBe(link.steps[link.steps.length - 2]?.y);
+
+        // Every step properly footed: solid directly beneath, clear at foot height.
+        for (const step of link.steps) {
+          expect(world.isSolid(step.x, step.y, step.z)).toBe(true);
+          expect(world.getBlock(step.x, step.y + 1, step.z)).toBe(AIR);
+        }
+
+        // The ground landing is a genuine sidewalk/gravel cell, and the deck
+        // landing a genuine elevated-deck cell -- not just "some CONCRETE".
+        expect(isSidewalkCell(grid, link.steps[0]?.x as number, link.steps[0]?.z as number)).toBe(true);
+        const levelIndex = grid.elevatedLevels.findIndex((l) => l.y === WALKWAY_Y);
+        expect(
+          isElevatedWalkableCell(grid, levelIndex, link.steps[link.steps.length - 1]?.x as number, link.steps[link.steps.length - 1]?.z as number),
+        ).toBe(true);
+
+        linksChecked++;
+      }
+    }
+
+    // Neutralize checks: if no seed produced a walkway stair at all, or the
+    // riser-matching predicate itself was broken, every assertion above (and
+    // `walkwaysMatched`) would be vacuously satisfied.
+    expect(linksChecked).toBeGreaterThan(0);
+    expect(walkwaysMatched).toBeGreaterThan(0);
+  });
+
+  it('never produces a step sequence that regresses, or repeats a y anywhere but the final deck landing (revert-probe: a broken monotonic check would let a flat floor slab masquerade as a stair)', () => {
+    let linksChecked = 0;
+
+    for (const seed of seeds) {
+      const world = new World();
+      generateCity(world, seed);
+      const grid = buildNavGrid(world, WORLD_SIZE_X, WORLD_SIZE_Z, GROUND_SURFACE_Y);
+
+      for (const link of grid.stairLinks) {
+        const ys = link.steps.map((s) => s.y);
+        const sorted = [...ys].sort((a, b) => a - b);
+        expect(ys).toEqual(sorted); // never decreases, ground to deck
+
+        // Exactly one repeated y is allowed (the top tread and the deck it
+        // leads onto, both at levelY) -- a real stair never repeats anywhere
+        // else, unlike a flat floor slab, which would repeat throughout.
+        const repeats = ys.length - new Set(ys).size;
+        expect(repeats).toBe(1);
+
+        linksChecked++;
+      }
+    }
+
+    expect(linksChecked).toBeGreaterThan(0);
   });
 });

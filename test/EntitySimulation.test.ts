@@ -15,6 +15,7 @@ function makeOpenGrid(width: number, depth: number): NavGrid {
     flowX: new Int8Array(width * depth).fill(1),
     flowZ: new Int8Array(width * depth),
     elevatedLevels: [],
+    stairLinks: [],
   };
 }
 

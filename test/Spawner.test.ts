@@ -26,6 +26,7 @@ function makeGrid(
     flowX: new Int8Array(width * depth),
     flowZ: new Int8Array(width * depth),
     elevatedLevels,
+    stairLinks: [],
   };
 }
 

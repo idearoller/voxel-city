@@ -11,18 +11,27 @@
  * which keeps phase 2 scoped to "the city feels alive" rather than full
  * NPC/player physics.
  *
- * Deliberately out of scope (documented, not silently dropped): elevated
- * pedestrians are deck-bound — they walk their one skybridge/walkway back
- * and forth and never path down to the street or between levels (see
- * `Pedestrian.y`'s doc comment); ground vehicles stay ground-only (flying
- * vehicles are a wholly separate population — see `FlyingVehicle.ts` and
- * `SkyLane.ts` — that never interacts with ground traffic or pedestrians);
- * no vehicle yields to pedestrians or other vehicles beyond not spawning on
- * top of one another; despawn and vehicle spawn placement use horizontal
- * (x, z) distance only (`playerY` only feeds elevated-pedestrian spawn
- * distance, see `Spawner.ts`'s `pickElevatedSpawnCell`); no camera-heading
- * bias on spawn angle, so an unlucky roll can in principle spawn just
- * outside the view frustum rather than strictly behind the camera.
+ * Deliberately out of scope (documented, not silently dropped): a walkway
+ * pedestrian may cross to/from the street via a real stair (see
+ * `NavGrid.StairLink` and `Pedestrian.stair`), but a *skybridge* pedestrian
+ * is still deck-bound — the internal spiral stair shaft that would connect a
+ * bridge's sky lobby back to the street is real geometry, but voxel-deriving
+ * a ground-connected chain through a tower's mostly-enclosed interior (and
+ * teaching `NavGrid` to recognize a sky lobby's own floor as walkable,
+ * distinct from an ordinary building floor at the same height) is
+ * disproportionate complexity for how rarely a player is near one, next to
+ * how common — and how visually prominent — the ground-level walkway
+ * disconnect was; the 30%-elevated-share spawn split (see `Spawner.ts`'s
+ * `pickElevatedSpawnCell`) is unchanged for bridges. Ground vehicles stay
+ * ground-only (flying vehicles are a wholly separate population — see
+ * `FlyingVehicle.ts` and `SkyLane.ts` — that never interacts with ground
+ * traffic or pedestrians); no vehicle yields to pedestrians or other
+ * vehicles beyond not spawning on top of one another; despawn and vehicle
+ * spawn placement use horizontal (x, z) distance only (`playerY` only feeds
+ * elevated-pedestrian spawn distance, see `Spawner.ts`'s
+ * `pickElevatedSpawnCell`); no camera-heading bias on spawn angle, so an
+ * unlucky roll can in principle spawn just outside the view frustum rather
+ * than strictly behind the camera.
  */
 
 import * as THREE from 'three';
