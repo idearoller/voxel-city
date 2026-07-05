@@ -1,8 +1,24 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { ChunkRenderer } from '../src/engine/ChunkRenderer';
+import { CULL_RADIUS } from '../src/engine/ChunkVisibility';
 import { CONCRETE } from '../src/world/BlockRegistry';
+import { CHUNK_SIZE, WORLD_SIZE_X } from '../src/world/coords';
 import { World } from '../src/world/World';
+
+/** Origin is a reasonable stand-in "camera is right here" position for tests that don't care about culling. */
+const ORIGIN = new THREE.Vector3(0, 0, 0);
+
+/**
+ * A chunk index on the x-axis that's comfortably beyond CULL_RADIUS from the
+ * origin, but still inside the finite world bounds -- clamped so this stays
+ * true even if CULL_RADIUS or WORLD_SIZE_X change later.
+ */
+const FAR_CHUNK_CX = Math.min(
+  Math.ceil(CULL_RADIUS / CHUNK_SIZE) + 5,
+  Math.floor((WORLD_SIZE_X - 1) / CHUNK_SIZE),
+);
+const FAR_CHUNK_X = FAR_CHUNK_CX * CHUNK_SIZE;
 
 /**
  * Builds a World + ChunkRenderer pair (renderer wired up first, so its
@@ -36,7 +52,7 @@ describe('ChunkRenderer.flushPending', () => {
   it('contrasts with update(), which only processes one frame\'s apply budget (4) per call', () => {
     const renderer = rendererWithManyDirtyChunks(10);
 
-    renderer.update();
+    renderer.update(ORIGIN);
 
     expect(renderer.pendingCount).toBe(6);
   });
@@ -45,8 +61,88 @@ describe('ChunkRenderer.flushPending', () => {
     const renderer = rendererWithManyDirtyChunks(5);
 
     await renderer.flushPending();
-    renderer.update();
+    renderer.update(ORIGIN);
 
     expect(renderer.pendingCount).toBe(0);
+  });
+});
+
+describe('ChunkRenderer distance culling', () => {
+  /** Every solid/road/windowLit/neon mesh currently tracked for `key`, flattened. */
+  function meshesForKey(renderer: ChunkRenderer, key: string): THREE.Mesh[] {
+    // Accesses the private map directly -- this is a whitebox test of the
+    // culling wiring, not of ChunkVisibility's math (covered separately).
+    const chunk = (renderer as unknown as { meshes: Map<string, { solid: THREE.Mesh | null; road: THREE.Mesh | null; windowLit: THREE.Mesh | null; neon: (THREE.Mesh | null)[] }> }).meshes.get(key);
+    if (!chunk) return [];
+    return [chunk.solid, chunk.road, chunk.windowLit, ...chunk.neon].filter(
+      (m): m is THREE.Mesh => m !== null,
+    );
+  }
+
+  it('hides a chunk whose nearest point is well beyond CULL_RADIUS from the camera', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(FAR_CHUNK_X, 1, 1, CONCRETE);
+    await renderer.flushPending();
+
+    renderer.update(ORIGIN);
+
+    const meshes = meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`);
+    expect(meshes.length).toBeGreaterThan(0);
+    expect(meshes.every((m) => m.visible === false)).toBe(true);
+  });
+
+  it('keeps a chunk visible when the camera is right next to it', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(0, 1, 1, CONCRETE);
+    await renderer.flushPending();
+
+    renderer.update(ORIGIN);
+
+    const meshes = meshesForKey(renderer, '0,0,0');
+    expect(meshes.length).toBeGreaterThan(0);
+    expect(meshes.every((m) => m.visible === true)).toBe(true);
+  });
+
+  it('re-evaluates visibility as the camera moves', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(FAR_CHUNK_X, 1, 1, CONCRETE);
+    await renderer.flushPending();
+
+    renderer.update(ORIGIN);
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(false);
+
+    renderer.update(new THREE.Vector3(FAR_CHUNK_X, 0, 0));
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(true);
+  });
+
+  it('newly meshed chunks get correct initial visibility, not a frame of default-visible', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(FAR_CHUNK_X, 1, 1, CONCRETE);
+
+    // flushPending's own loop calls the scheduler directly, not update(); a
+    // single update(cameraAtOrigin) right after must still apply correct
+    // culling to the chunk it just meshed.
+    await renderer.flushPending();
+    renderer.update(ORIGIN);
+
+    const meshes = meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`);
+    expect(meshes.every((m) => m.visible === false)).toBe(true);
+  });
+
+  it('setAllChunksVisible() forces a distant chunk visible (for EnvironmentProbe captures)', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(FAR_CHUNK_X, 1, 1, CONCRETE);
+    await renderer.flushPending();
+    renderer.update(ORIGIN);
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(false);
+
+    renderer.setAllChunksVisible();
+
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_TIME_OF_DAY, dayFactor, interpolateAtmosphere } from '../src/engine/dayNight';
+import { DEFAULT_TIME_OF_DAY, MIN_FOG_DENSITY, dayFactor, interpolateAtmosphere } from '../src/engine/dayNight';
 
 describe('dayFactor', () => {
   it('is 0 at midnight (t=0)', () => {
@@ -62,5 +62,12 @@ describe('interpolateAtmosphere', () => {
   it('has no independent fogColor field -- fog is synced to the sky horizon color by design', () => {
     const params = interpolateAtmosphere(0.37);
     expect('fogColor' in params).toBe(false);
+  });
+});
+
+describe('MIN_FOG_DENSITY', () => {
+  it('is the day preset\'s density (0.009) -- thinner than night\'s (0.012)', () => {
+    expect(MIN_FOG_DENSITY).toBeCloseTo(interpolateAtmosphere(0.5).fogDensity, 5);
+    expect(MIN_FOG_DENSITY).toBeLessThan(interpolateAtmosphere(0).fogDensity);
   });
 });

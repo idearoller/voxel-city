@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { chunkMeshBuffersToGeometries } from './ChunkGeometryBuilder';
 import type { ChunkMeshBuffers } from './ChunkMesher';
+import { isChunkVisible, type ChunkCoord } from './ChunkVisibility';
 import { createDefaultMesherScheduler, type MesherScheduler } from './MesherScheduler';
 import { neonMaterials, roadMaterial, solidMaterial, windowLitMaterial } from './Materials';
 import { parseChunkKey } from '../world/coords';
 import type { World } from '../world/World';
 
-interface ChunkMeshes {
+interface ChunkMeshes extends ChunkCoord {
   solid: THREE.Mesh | null;
   road: THREE.Mesh | null;
   windowLit: THREE.Mesh | null;
@@ -27,7 +28,10 @@ function scheduleTick(fn: () => void): void {
  * `MesherScheduler` (a worker pool in the browser, or an in-process
  * synchronous fallback) and applying a bounded number of completed results
  * per frame. Disposes stale geometry on every rebuild; all-air chunks are
- * skipped (no mesh created).
+ * skipped (no mesh created). `update()` also distance-culls each chunk's
+ * meshes every frame via `ChunkVisibility.isChunkVisible` (see that module
+ * for the cull radius's derivation) -- otherwise looking across the full
+ * city puts every allocated chunk's geometry in the frustum at once.
  */
 export class ChunkRenderer {
   private readonly meshes = new Map<string, ChunkMeshes>();
@@ -45,9 +49,47 @@ export class ChunkRenderer {
     });
   }
 
-  /** Call once per frame; pumps the scheduler (dispatch + apply up to its per-frame budget). */
-  update(): void {
+  /**
+   * Call once per frame; pumps the scheduler (dispatch + apply up to its
+   * per-frame budget) and re-derives which chunk meshes are within
+   * `ChunkVisibility.CULL_RADIUS` of `cameraPosition`. Run in the same call
+   * that just applied new mesh results, so a freshly meshed chunk gets its
+   * correct visibility before the next actual draw call -- never one frame
+   * of everything visible.
+   */
+  update(cameraPosition: THREE.Vector3): void {
     this.scheduler.update();
+    this.updateVisibility(cameraPosition);
+  }
+
+  /**
+   * Forces every chunk mesh visible, bypassing distance culling, until the
+   * next `update()`. `EnvironmentProbe`'s cubemap capture renders the scene
+   * from its own fixed position near the city center, not the player's
+   * camera -- a chunk the player-distance cull hid could still belong in
+   * that reflection. Fog (scene-global, applies to whichever camera renders
+   * it) is what should hide distant geometry from the probe, not this cull.
+   */
+  setAllChunksVisible(): void {
+    for (const chunk of this.meshes.values()) {
+      this.setChunkVisible(chunk, true);
+    }
+  }
+
+  private updateVisibility(cameraPosition: THREE.Vector3): void {
+    const { x, y, z } = cameraPosition;
+    for (const chunk of this.meshes.values()) {
+      this.setChunkVisible(chunk, isChunkVisible(chunk, x, y, z));
+    }
+  }
+
+  private setChunkVisible(chunk: ChunkMeshes, visible: boolean): void {
+    if (chunk.solid) chunk.solid.visible = visible;
+    if (chunk.road) chunk.road.visible = visible;
+    if (chunk.windowLit) chunk.windowLit.visible = visible;
+    for (const neonMesh of chunk.neon) {
+      if (neonMesh) neonMesh.visible = visible;
+    }
   }
 
   /** Number of chunks whose latest requested mesh hasn't yet been applied. */
@@ -103,7 +145,8 @@ export class ChunkRenderer {
     });
 
     if (solidMesh || roadMesh || windowLitMesh || neonMeshes.some((m) => m !== null)) {
-      this.meshes.set(key, { solid: solidMesh, road: roadMesh, windowLit: windowLitMesh, neon: neonMeshes });
+      const { cx, cy, cz } = parseChunkKey(key);
+      this.meshes.set(key, { cx, cy, cz, solid: solidMesh, road: roadMesh, windowLit: windowLitMesh, neon: neonMeshes });
     }
   }
 

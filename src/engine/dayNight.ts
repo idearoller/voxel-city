@@ -63,6 +63,16 @@ const DAY: AtmosphereParams = {
   starOpacity: 0,
 };
 
+/**
+ * The lower of the two fog densities the cycle ever uses (`DAY`'s, at 0.009
+ * -- thinner than `NIGHT`'s 0.012). Thinner fog lets a chunk stay visible
+ * farther out, so anything deriving a "how far can fog still be hiding
+ * something" distance (e.g. `ChunkVisibility`'s cull radius) must use this
+ * value, not the night one, or it will cull chunks that are still plainly
+ * visible during the day.
+ */
+export const MIN_FOG_DENSITY = Math.min(NIGHT.fogDensity, DAY.fogDensity);
+
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }

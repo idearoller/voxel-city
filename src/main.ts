@@ -134,6 +134,13 @@ function refreshEnvironmentProbe(): void {
     clearTimeout(environmentRefreshTimeout);
     environmentRefreshTimeout = undefined;
   }
+  // The capture renders from environmentProbePosition (near the city
+  // center), not the player's camera -- a chunk the player-distance cull
+  // hid could still belong in this reflection, so force everything visible
+  // for this one render. The next chunkRenderer.update() (next animation
+  // frame) restores the player-relative culling before anything is drawn
+  // to the actual screen.
+  chunkRenderer.setAllChunksVisible();
   environmentProbe.refresh(engine.scene, environmentProbePosition, roadMaterial);
   // Piggybacks on the same debounce as the wet-street cubemap refresh: a
   // sandbox edit that breaks (or creates) an elevator shaft is picked up
@@ -508,7 +515,7 @@ engine.start({
     // after a stall the accumulator can replay update() many times in one
     // frame, and running the rebuild budget there would blow past the
     // intended ~4-chunks/frame cap right when the machine is already behind.
-    chunkRenderer.update();
+    chunkRenderer.update(engine.camera.position);
     updateNeon(elapsedTime);
     billboardLayer.update(elapsedTime, atmosphere.nightFactor);
     entitySystem.render();

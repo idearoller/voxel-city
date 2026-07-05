@@ -49,7 +49,15 @@ export class Engine {
     });
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Clamped to 1.5, not 2: on a retina display this is the difference
+    // between rendering ~2.25x and ~4x the CSS pixel count through the full
+    // EffectComposer chain (RenderPass + the 5-mip UnrealBloomPass blur,
+    // see PostFX.ts) every frame -- a ~44% fill-rate cut on exactly the kind
+    // of integrated GPU this matters most for. Bloom already dominates the
+    // final look and masks aliasing (see PostFX's BLOOM_RESOLUTION_SCALE
+    // comment), so the softer edges from a lower render resolution aren't
+    // perceptible in practice.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
     this.scene = new THREE.Scene();
 
