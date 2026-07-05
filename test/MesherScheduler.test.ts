@@ -331,6 +331,14 @@ describe('worker-path / sync-path parity', () => {
     const workerPathResult = runMesherJob(request);
 
     expect(workerPathResult.buffers).toEqual(reference);
+    // Index parity pinned explicitly rather than implied by the deep-equal
+    // above: the typed-array TYPE must match too (a Uint16/Uint32 divergence
+    // between the paths would corrupt rendering only on dense chunks).
+    const workerIndices = workerPathResult.buffers.solid?.indices;
+    const referenceIndices = reference.solid?.indices;
+    expect(workerIndices).toBeInstanceOf(Uint16Array);
+    expect(workerIndices?.constructor).toBe(referenceIndices?.constructor);
+    expect(workerIndices && Array.from(workerIndices)).toEqual(referenceIndices && Array.from(referenceIndices));
   });
 
   it('buildChunkSnapshot\'s padded opacity shell reflects a neighbor chunk\'s voxel across the border', () => {

@@ -5,7 +5,9 @@ import {
   meshDataToBuffers,
   paddedIndex,
   CHUNK_PAD,
+  type ChunkMeshData,
   type ChunkSnapshot,
+  type MeshGroup,
 } from '../src/engine/ChunkMesher';
 import { ASPHALT, CONCRETE, NEON_CYAN, NEON_PINK, WINDOW_LIT } from '../src/world/BlockRegistry';
 import { CHUNK_SIZE, CHUNK_VOXEL_COUNT, localIndex } from '../src/world/coords';
@@ -254,5 +256,42 @@ describe('index buffer type selection (Uint16 vs Uint32 cutover)', () => {
     const buffers = meshDataToBuffers(data);
 
     expect(buffers.solid?.indices).toBeInstanceOf(Uint16Array);
+  });
+
+  /**
+   * Synthetic solid group with exactly `count` vertices in the mesher's
+   * 4-verts + 6-indices-per-face layout — vertex counts are only ever
+   * reachable in multiples of 4, so the boundary cases are 65,536 itself
+   * and 65,540, the first count past it.
+   */
+  function syntheticData(count: number): ChunkMeshData {
+    const zeros = new Array<number>(count * 3).fill(0);
+    const indices: number[] = [];
+    for (let base = 0; base < count; base += 4) {
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+    const empty = (): MeshGroup => ({ positions: [], normals: [], colors: [], indices: [] });
+    return {
+      solid: { positions: zeros, normals: [...zeros], colors: [...zeros], indices },
+      road: empty(),
+      windowLit: empty(),
+      neon: [empty(), empty(), empty(), empty()],
+    };
+  }
+
+  it('stays Uint16Array at exactly 65,536 vertices (max index 65,535 is the Uint16 ceiling)', () => {
+    const buffers = meshDataToBuffers(syntheticData(65_536));
+    const indices = buffers.solid?.indices;
+
+    expect(indices).toBeInstanceOf(Uint16Array);
+    // The highest index must survive the typed-array round-trip un-wrapped:
+    // 65,536 would wrap to 0 in a Uint16Array, 65,535 must not.
+    expect(indices && indices[indices.length - 1]).toBe(65_535);
+  });
+
+  it('switches to Uint32Array at 65,540 vertices, the first count past the ceiling', () => {
+    const buffers = meshDataToBuffers(syntheticData(65_540));
+
+    expect(buffers.solid?.indices).toBeInstanceOf(Uint32Array);
   });
 });
