@@ -16,18 +16,21 @@ import { Rain } from './engine/Rain';
 import { ModeManager } from './player/ModeManager';
 import { LookControls } from './player/LookControls';
 import { aabbFromFeet, voxelIntersectsAabb } from './player/PlayerCollision';
-import { raycastVoxels } from './player/VoxelRaycast';
+import { raycastVoxels, type RayHit } from './player/VoxelRaycast';
 import { GROUND_SURFACE_Y, generateCity } from './gen/CityGenerator';
 import { findGroundSpawnPoint, findSpawnPoint } from './gen/layout';
 import { SerializerError, importWorld, serializeWorld } from './io/Serializer';
 import { AIR, ASPHALT } from './world/BlockRegistry';
 import { CHUNK_SIZE, WORLD_SIZE_X, WORLD_SIZE_Y, WORLD_SIZE_Z } from './world/coords';
 import { World } from './world/World';
+import { detectTouchCapability } from './input/touchDetection';
+import { attachTouchInput, TouchInputController } from './input/TouchInputController';
 import { ErrorToast } from './ui/ErrorToast';
 import { FpsCounter } from './ui/FpsCounter';
 import { Hud } from './ui/Hud';
 import { Palette } from './ui/Palette';
 import { Toolbar } from './ui/Toolbar';
+import { TouchControlsUI } from './ui/TouchControlsUI';
 import './ui/ui.css';
 
 const DEFAULT_SEED = 'night-city-01';
@@ -156,11 +159,77 @@ const fpsCounter = import.meta.env.DEV ? new FpsCounter(uiRoot) : null;
 
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
-window.addEventListener('keydown', (event) => {
-  if (event.code !== 'KeyM') return;
+/** Shared by the M keydown, the toolbar's SOUND button, and the touch mute button — see toolbar/touchControlsUI wiring below. */
+function toggleMute(): void {
   audioSystem.toggleMuted();
   toolbar.setMuted(audioSystem.isMuted);
+  touchControlsUI.setMuted(audioSystem.isMuted);
+}
+
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyM') return;
+  toggleMute();
 });
+
+// ---------------------------------------------------------------------------
+// Touch controls: capability-detected (never UA-sniffed — see
+// detectTouchCapability), left-half floating joystick for movement,
+// right-half drag for look / short-tap for voxel edit, plus a button bar for
+// actions with no natural drag equivalent (jump/fly, mode switch,
+// place/remove, mute). The desktop mouse/keyboard/pointer-lock path above is
+// completely untouched by any of this: TouchInputController and
+// TouchControlsUI only ever *add* touchstart/touchmove/touchend listeners
+// and DOM buttons, which never fire from real mouse/keyboard input.
+// ---------------------------------------------------------------------------
+let touchEditMode: 'place' | 'remove' = 'remove';
+
+/** Edits the voxel under the crosshair (screen center) — the same aim point `currentHit()` already uses for the highlight box and desktop mouse edits, so touch aiming (look-drag driven) and mouse aiming (pointer-lock driven) behave identically: neither depends on where the triggering touch/click landed on screen. */
+function performTouchEdit(): void {
+  const hit = currentHit();
+  if (!hit) return;
+  if (touchEditMode === 'remove') {
+    removeVoxelAt(hit);
+  } else {
+    placeVoxelAt(hit);
+  }
+}
+
+const touchControlsUI = new TouchControlsUI(uiRoot, {
+  setKey: (code, pressed) => modeManager.setVirtualKey(code, pressed),
+  onModeToggle: () => {
+    if (modeManager.currentMode === 'sandbox') {
+      modeManager.enterPlayMode();
+    } else {
+      modeManager.enterSandboxMode();
+    }
+  },
+  onMuteToggle: () => toggleMute(),
+});
+touchControlsUI.onEditModeChange((mode) => {
+  touchEditMode = mode;
+});
+modeManager.onModeChange((mode) => touchControlsUI.setMode(mode));
+
+const touchInputController = new TouchInputController(
+  {
+    setKey: (code, pressed) => modeManager.setVirtualKey(code, pressed),
+    setSprint: (pressed) => modeManager.setVirtualSprint(pressed),
+    applyLookDelta: (deltaX, deltaY) => lookControls.applyTouchDelta(deltaX, deltaY),
+    onTap: () => performTouchEdit(),
+    onStickChange: (stick) => touchControlsUI.setStick(stick),
+  },
+  () => window.innerWidth,
+);
+attachTouchInput(canvas, touchInputController);
+
+if (detectTouchCapability()) {
+  touchControlsUI.setVisible(true);
+} else {
+  // Hybrid touch+mouse laptops don't reliably self-report touch capability
+  // up front — reveal the overlay the first time a real touch actually
+  // happens instead of leaving it hidden for the whole session.
+  window.addEventListener('touchstart', () => touchControlsUI.setVisible(true), { once: true, passive: true });
+}
 
 // ---------------------------------------------------------------------------
 // Target-block highlight: a thin edge box snapped to whatever voxel the
@@ -186,6 +255,27 @@ function currentHit() {
   });
 }
 
+/** Removes the targeted voxel — shared by the desktop left-click path and touch tap-to-edit ('remove' mode). */
+function removeVoxelAt(hit: RayHit): void {
+  world.setBlock(hit.pos[0], hit.pos[1], hit.pos[2], AIR);
+  scheduleEnvironmentRefresh();
+}
+
+/** Places the currently selected block on the face the ray entered through — shared by the desktop right-click path and touch tap-to-edit ('place' mode). */
+function placeVoxelAt(hit: RayHit): void {
+  const placeX = hit.pos[0] + hit.normal[0];
+  const placeY = hit.pos[1] + hit.normal[1];
+  const placeZ = hit.pos[2] + hit.normal[2];
+
+  if (modeManager.currentMode === 'play') {
+    const playerBox = aabbFromFeet(modeManager.playerFeet);
+    if (voxelIntersectsAabb([placeX, placeY, placeZ], playerBox)) return;
+  }
+
+  world.setBlock(placeX, placeY, placeZ, palette.selectedBlockId);
+  scheduleEnvironmentRefresh();
+}
+
 canvas.addEventListener('mousedown', (event) => {
   if (document.pointerLockElement !== canvas) return;
 
@@ -193,22 +283,9 @@ canvas.addEventListener('mousedown', (event) => {
   if (!hit) return;
 
   if (event.button === 0) {
-    // Left click: remove the targeted voxel.
-    world.setBlock(hit.pos[0], hit.pos[1], hit.pos[2], AIR);
-    scheduleEnvironmentRefresh();
+    removeVoxelAt(hit);
   } else if (event.button === 2) {
-    // Right click: place the selected block on the face the ray entered through.
-    const placeX = hit.pos[0] + hit.normal[0];
-    const placeY = hit.pos[1] + hit.normal[1];
-    const placeZ = hit.pos[2] + hit.normal[2];
-
-    if (modeManager.currentMode === 'play') {
-      const playerBox = aabbFromFeet(modeManager.playerFeet);
-      if (voxelIntersectsAabb([placeX, placeY, placeZ], playerBox)) return;
-    }
-
-    world.setBlock(placeX, placeY, placeZ, palette.selectedBlockId);
-    scheduleEnvironmentRefresh();
+    placeVoxelAt(hit);
   }
 });
 
@@ -358,11 +435,9 @@ toolbar.onToggleRain(() => {
   rain.toggle();
   toolbar.setRainEnabled(rain.enabled);
 });
-toolbar.onToggleMute(() => {
-  audioSystem.toggleMuted();
-  toolbar.setMuted(audioSystem.isMuted);
-});
+toolbar.onToggleMute(() => toggleMute());
 toolbar.setMuted(audioSystem.isMuted);
+touchControlsUI.setMuted(audioSystem.isMuted);
 toolbar.onExportRequest(() => exportCity());
 toolbar.onImportRequest((file) => {
   void generationGate.run(() => importCity(file));

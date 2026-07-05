@@ -57,6 +57,34 @@ seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
 neon hum, distant traffic — all synthesized via WebAudio, no audio files),
 **⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
 
+### Touch controls
+
+On a touch-capable device (detected by capability — `ontouchstart`/
+`maxTouchPoints`, not by sniffing the user agent — so it also covers
+touchscreen laptops), an on-screen control overlay appears automatically
+(on a hybrid touch+mouse laptop with no touchscreen signal up front, it
+appears the moment you actually touch the screen):
+
+| Action | Touch |
+|---|---|
+| Move | Left half of the screen: touch down anywhere to spawn a floating joystick there, drag to move |
+| Look | Right half of the screen: drag to rotate the camera |
+| Edit voxel | Right half: a short tap (not a drag) edits the block under the crosshair — remove or place, per the −/+ button |
+| Jump (play mode) | ⏶ button |
+| Fly up / down (sandbox mode) | ▲ / ▼ buttons |
+| Switch mode | ⇄ button |
+| Place/remove toggle | −/+ button |
+| Mute / unmute | 🔊 button |
+| Select block | Tap a palette swatch |
+
+Touch look/edit always aims at the screen-center crosshair — the same point
+used for the target-block highlight and desktop mouse aiming — rather than
+the raw tap coordinate, so aiming behaves identically regardless of input
+device. There is no pointer lock on touch: look comes entirely from
+dragging, and the desktop mouse/keyboard/pointer-lock path is unaffected by
+any of this — touch only ever adds `touchstart`/`touchmove`/`touchend`
+listeners and on-screen buttons alongside it.
+
 Press **F3** to toggle a small FPS readout (dev builds only).
 
 ## Development
@@ -99,6 +127,13 @@ src/
   player/     Sandbox fly controller, first-person walk controller with
               AABB-vs-voxel collision + auto-step, mode switching, look
               controls, voxel raycasting.
+  input/      Touch input: capability detection, floating-joystick math,
+              tap-vs-drag gesture classification, and the DOM-free
+              multi-touch controller (TouchInputController) that maps touch
+              gestures onto the same WASD/look/click intent the keyboard and
+              mouse paths already produce — player/ui/ controllers never
+              know input came from touch. Pure logic + a thin real-DOM
+              adapter (attachTouchInput), Three-free.
   entities/   NPC/vehicle simulation: pedestrian pathing (sidewalks, park
               paths, elevated walkway/skybridge decks with stair
               transitions), ground-vehicle lane flow, flying hover-car
@@ -114,11 +149,11 @@ src/
   io/         Serializer.ts — the `.vxc` binary export/import format. Pure
               data in/out (ArrayBuffer <-> World), no DOM/Three.js.
   ui/         Plain DOM overlays: Toolbar, Hud, Palette, ErrorToast,
-              FpsCounter. No game-logic knowledge; main.ts wires them to the
-              engine/world.
+              FpsCounter, TouchControlsUI (joystick visual + button bar). No
+              game-logic knowledge; main.ts wires them to the engine/world.
   main.ts     Composition root: wires world/engine/gen/player/entities/
-              elevators/io/ui together, owns the generation and import
-              lifecycles.
+              elevators/io/ui/input together, owns the generation and
+              import lifecycles.
 ```
 
 See `PERF.md` for the chunk-meshing performance decisions (why there's no

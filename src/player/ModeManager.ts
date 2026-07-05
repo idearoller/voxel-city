@@ -64,6 +64,39 @@ export class ModeManager {
     this.playController.setSupportProvider(provider);
   }
 
+  /**
+   * Feeds a virtual key press/release into *both* underlying controllers,
+   * mirroring what a real window keydown/keyup does today — `FlyController`
+   * and `PlayController` each independently listen for the same
+   * `KeyboardEvent`s and track their own `keys` state regardless of which
+   * mode is active; only `update()` picks whichever one actually moves the
+   * camera. Touch input has no native `KeyboardEvent`s to dispatch, so this
+   * is how it reaches the same fan-out — the controllers themselves stay
+   * completely unaware the "keypress" came from a touch joystick/button
+   * rather than a keyboard.
+   */
+  setVirtualKey(code: string, pressed: boolean): void {
+    this.flyController.setKey(code, pressed);
+    this.playController.setKey(code, pressed);
+  }
+
+  /**
+   * Feeds a virtual "sprint" press/release into each controller's own
+   * *actual* sprint binding — unlike `setVirtualKey`, this is deliberately
+   * not a single shared keycode, because "sprint" isn't the same physical
+   * key in both controllers: `PlayController.setKey` treats Shift as
+   * sprint, but `FlyController.setKey` treats Shift as fly-down and Ctrl as
+   * its own sprint multiplier. Reusing Shift for touch sprint in both modes
+   * would make a full-deflection joystick push descend instead of sprint
+   * while flying. Same fan-out-to-both rationale as `setVirtualKey`: only
+   * the active controller's `update()` runs, so feeding the inactive one is
+   * harmless and keeps behavior symmetric across a mode switch.
+   */
+  setVirtualSprint(pressed: boolean): void {
+    this.playController.setKey('ShiftLeft', pressed);
+    this.flyController.setKey('ControlLeft', pressed);
+  }
+
   update(dt: number): void {
     if (this.mode === 'sandbox') {
       this.flyController.update(dt);

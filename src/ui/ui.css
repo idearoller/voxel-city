@@ -266,3 +266,93 @@
 .fps-counter.visible {
   display: block;
 }
+
+/* Touch controls: hidden entirely until main.ts confirms touch capability
+   (up front, or on the device's first real touch — see detectTouchCapability). */
+.touch-controls {
+  display: none;
+}
+
+.touch-controls.visible {
+  display: block;
+}
+
+.touch-stick-base {
+  position: fixed;
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;
+  border-radius: 50%;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease;
+  z-index: 5;
+}
+
+.touch-stick-base.visible {
+  opacity: 1;
+}
+
+.touch-stick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48px;
+  height: 48px;
+  margin: -24px 0 0 -24px;
+  border-radius: 50%;
+  background: rgba(45, 245, 255, 0.35);
+  border: 1px solid var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(45, 245, 255, 0.5);
+}
+
+.touch-button-bar {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.touch-button {
+  width: 56px;
+  height: 56px;
+  min-width: 48px;
+  min-height: 48px;
+  font-family: inherit;
+  font-size: 20px;
+  color: var(--neon-cyan);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-button.hidden {
+  display: none;
+}
+
+.touch-button-active {
+  color: var(--neon-pink);
+  border-color: var(--neon-pink);
+  box-shadow: 0 0 8px rgba(255, 45, 149, 0.5);
+}
+
+.touch-button-mode,
+.touch-button-editmode,
+.touch-button-mute {
+  width: 48px;
+  height: 48px;
+  font-size: 16px;
+}

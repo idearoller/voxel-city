@@ -53,7 +53,12 @@ export class FlyController {
     this.setKey(event.code, false);
   };
 
-  private setKey(code: string, pressed: boolean): void {
+  /**
+   * Applies a raw key-code press/release. Public (like `PlayController.setKey`)
+   * so both the real window keydown/keyup listeners and touch input (see
+   * `ModeManager.setVirtualKey`) can drive it through the same path.
+   */
+  setKey(code: string, pressed: boolean): void {
     switch (code) {
       case 'KeyW':
         this.keys.forward = pressed;

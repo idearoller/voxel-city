@@ -46,7 +46,7 @@ export class Palette {
     this.root.className = 'palette';
     this.root.style.pointerEvents = 'auto';
 
-    for (const block of PLACEABLE_BLOCKS) {
+    PLACEABLE_BLOCKS.forEach((block, index) => {
       const swatch = document.createElement('div');
       swatch.className = 'palette-swatch';
       swatch.style.background = cssColor(block);
@@ -54,9 +54,12 @@ export class Palette {
         swatch.style.boxShadow = `0 0 10px ${cssColor(block)}`;
       }
       swatch.title = block.name;
+      // Click/tap selects directly — the only selection path that works
+      // without a keyboard or scroll wheel, i.e. on touch.
+      swatch.addEventListener('click', () => this.select(index));
       this.root.appendChild(swatch);
       this.swatchEls.push(swatch);
-    }
+    });
 
     container.appendChild(this.root);
     this.updateSelectionStyle();

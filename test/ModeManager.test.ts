@@ -121,4 +121,103 @@ describe('ModeManager', () => {
 
     expect(modeManager.reach).toBeLessThan(sandboxReach);
   });
+
+  describe('setVirtualKey (touch input path)', () => {
+    it('drives movement in sandbox (fly) mode exactly like a real keydown would', () => {
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+
+      modeManager.setVirtualKey('KeyW', true);
+      for (let tick = 0; tick < 30; tick++) modeManager.update(1 / 60);
+
+      // FlyController moves the camera along its own forward direction; cameraAt looks toward +x.
+      expect(camera.position.x).toBeGreaterThan(5);
+    });
+
+    it('feeds both controllers so movement resumes correctly after a mode switch mid-hold', () => {
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+
+      // Held before ever switching to play — mirrors a touch joystick already
+      // pushed forward at the moment the mode-toggle button is tapped.
+      modeManager.setVirtualKey('KeyW', true);
+      modeManager.enterPlayMode();
+      const feetBefore = modeManager.playerFeet;
+
+      for (let tick = 0; tick < 30; tick++) modeManager.update(1 / 60);
+
+      // PlayController also received the virtual keydown (see setVirtualKey's
+      // fan-out) even though it wasn't the active controller when it fired.
+      expect(modeManager.playerFeet[0]).not.toBe(feetBefore[0]);
+    });
+
+    it('releases movement when set to false — gain after release decays instead of continuing at the held rate', () => {
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+
+      modeManager.setVirtualKey('KeyW', true);
+      for (let tick = 0; tick < 30; tick++) modeManager.update(1 / 60);
+      const xAtRelease = camera.position.x;
+
+      modeManager.setVirtualKey('KeyW', false);
+      for (let tick = 0; tick < 30; tick++) modeManager.update(1 / 60);
+      const gainAfterRelease = camera.position.x - xAtRelease;
+
+      expect(gainAfterRelease).toBeGreaterThan(0); // damped velocity coasts briefly...
+      expect(gainAfterRelease).toBeLessThan(xAtRelease); // ...but decays, it doesn't keep accelerating.
+    });
+  });
+
+  describe('setVirtualSprint (regression: a full-deflection joystick must sprint in fly mode, not descend)', () => {
+    it('speeds up forward flight instead of dropping the camera (fly-mode Y stays flat)', () => {
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world); // starts in sandbox/fly
+
+      modeManager.setVirtualKey('KeyW', true);
+      modeManager.setVirtualSprint(true);
+      for (let tick = 0; tick < 60; tick++) modeManager.update(1 / 60);
+
+      // The bug this guards against: a shared ShiftLeft code reaches
+      // FlyController as fly-DOWN (see FlyController.setKey), sinking the
+      // camera instead of sprinting. setVirtualSprint must route fly-mode
+      // sprint through Ctrl instead, leaving y untouched.
+      expect(camera.position.y).toBeCloseTo(20, 5);
+    });
+
+    it('walking forward with sprint covers more ground than without it, over the same real fly physics', () => {
+      const world2 = buildFlatWorld(200); // wide enough that neither run clips the edge
+      const baseline = cameraAt(5, 20, 5);
+      const baselineManager = new ModeManager(baseline, world2);
+      baselineManager.setVirtualKey('KeyW', true);
+      for (let tick = 0; tick < 60; tick++) baselineManager.update(1 / 60);
+
+      const sprinting = cameraAt(5, 20, 5);
+      const sprintManager = new ModeManager(sprinting, world2);
+      sprintManager.setVirtualKey('KeyW', true);
+      sprintManager.setVirtualSprint(true);
+      for (let tick = 0; tick < 60; tick++) sprintManager.update(1 / 60);
+
+      expect(sprinting.position.x).toBeGreaterThan(baseline.position.x);
+    });
+
+    it('play-mode sprint still works via Shift, unaffected by the fly-mode Ctrl routing', () => {
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.enterPlayMode();
+
+      modeManager.setVirtualKey('KeyW', true);
+      modeManager.setVirtualSprint(true);
+      for (let tick = 0; tick < 30; tick++) modeManager.update(1 / 60);
+      const sprintX = modeManager.playerFeet[0];
+
+      const walkCamera = cameraAt(5, 20, 5);
+      const walkManager = new ModeManager(walkCamera, world);
+      walkManager.enterPlayMode();
+      walkManager.setVirtualKey('KeyW', true);
+      for (let tick = 0; tick < 30; tick++) walkManager.update(1 / 60);
+      const walkX = walkManager.playerFeet[0];
+
+      expect(sprintX).toBeGreaterThan(walkX);
+    });
+  });
 });

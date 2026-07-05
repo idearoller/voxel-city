@@ -19,6 +19,10 @@
         display: block;
         width: 100%;
         height: 100%;
+        /* Touch-only: stop the browser's scroll/pinch-zoom gestures from
+           competing with the joystick/look-drag touch handlers. No effect
+           on mouse/trackpad input. */
+        touch-action: none;
       }
       #ui-root {
         position: fixed;
