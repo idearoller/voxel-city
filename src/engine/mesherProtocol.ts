@@ -57,7 +57,12 @@ export function runMesherJob(request: MesherJobRequest): MesherJobResult {
 
 function collectGroupBuffers(list: ArrayBuffer[], group: MeshBuffers | null): void {
   if (!group) return;
-  list.push(group.positions.buffer as ArrayBuffer, group.normals.buffer as ArrayBuffer, group.colors.buffer as ArrayBuffer);
+  list.push(
+    group.positions.buffer as ArrayBuffer,
+    group.normals.buffer as ArrayBuffer,
+    group.colors.buffer as ArrayBuffer,
+    group.indices.buffer as ArrayBuffer,
+  );
 }
 
 /** Every underlying `ArrayBuffer` in a `ChunkMeshBuffers`, for use as a `postMessage` transfer list. */

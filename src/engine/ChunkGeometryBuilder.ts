@@ -21,6 +21,7 @@ function buffersToGeometry(buffers: MeshBuffers | null): THREE.BufferGeometry | 
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(buffers.positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(buffers.normals, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(buffers.colors, 3));
+  geometry.setIndex(new THREE.BufferAttribute(buffers.indices, 1));
   return geometry;
 }
 

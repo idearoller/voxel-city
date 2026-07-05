@@ -237,10 +237,18 @@ export interface MeshGroup {
   positions: number[];
   normals: number[];
   colors: number[];
+  /**
+   * Triangle indices into this group's own position/normal/color arrays, 6
+   * per quad face (two triangles, `[0,1,2, 0,2,3]` relative to that face's 4
+   * vertices). Vertices are never shared *across* faces — each face's AO
+   * shading and normal are baked per-vertex and differ face to face — only
+   * a single quad's own 2 triangles share its 4 vertices.
+   */
+  indices: number[];
 }
 
 function emptyGroup(): MeshGroup {
-  return { positions: [], normals: [], colors: [] };
+  return { positions: [], normals: [], colors: [], indices: [] };
 }
 
 export interface ChunkMeshData {
@@ -286,6 +294,18 @@ function pushVertex(
   group.positions.push(x, y, z);
   group.normals.push(normal[0], normal[1], normal[2]);
   group.colors.push(r, g, b);
+}
+
+/** Appends the 6 indices (2 triangles, `[0,1,2, 0,2,3]`) for the quad whose 4 vertices were just pushed starting at `firstVertexIndex`. */
+function pushQuadIndices(group: MeshGroup, firstVertexIndex: number): void {
+  group.indices.push(
+    firstVertexIndex,
+    firstVertexIndex + 1,
+    firstVertexIndex + 2,
+    firstVertexIndex,
+    firstVertexIndex + 2,
+    firstVertexIndex + 3,
+  );
 }
 
 /**
@@ -344,19 +364,16 @@ export function buildChunkMeshDataFromSnapshot(snapshot: ChunkSnapshot, chunk: C
             return face.shade * aoShade;
           };
 
-          const emit = (i: number): void => {
+          // 4 unique vertices for this quad (not shared with any other
+          // face's vertices — AO/normal are baked per-face), indexed by the
+          // 2 triangles (0,1,2) and (0,2,3) that make it up.
+          const firstVertexIndex = group.positions.length / 3;
+          for (let i = 0; i < 4; i++) {
             const shade = shadeAt(i) * tint;
             const pos = positions[i] as number[];
             pushVertex(group, pos[0] as number, pos[1] as number, pos[2] as number, face.normal, r * shade, g * shade, b * shade);
-          };
-
-          // Two triangles: (0,1,2) and (0,2,3).
-          emit(0);
-          emit(1);
-          emit(2);
-          emit(0);
-          emit(2);
-          emit(3);
+          }
+          pushQuadIndices(group, firstVertexIndex);
         }
       }
     }
@@ -374,19 +391,45 @@ export function buildChunkMeshData(world: World, chunk: ChunkCoord): ChunkMeshDa
   return buildChunkMeshDataFromSnapshot(buildChunkSnapshot(world, chunk), chunk);
 }
 
+/**
+ * Largest vertex index a `Uint16Array` index buffer can address. A chunk is
+ * 32^3 = 32,768 voxels; a single material group could in principle contain
+ * *every* voxel in the chunk arranged so every face of every voxel is
+ * exposed (a 3D-checkerboard "pathological" fill, where every solid voxel's
+ * 6 neighbors are all air) — 32,768 voxels x 6 faces x 4 unique vertices =
+ * 786,432 vertices for that one group, which overflows a `Uint16Array`
+ * (max index 65,535) by more than 10x. That worst case is unlikely in a
+ * real generated city but is a legitimate reachable state of this data
+ * structure (nothing upstream rules it out), so the choice below is made
+ * per-buffer from the group's *actual* vertex count rather than assumed:
+ * `Uint16Array` (2 bytes/index) whenever the group's vertex count fits,
+ * falling back to `Uint32Array` (4 bytes/index) only when it doesn't.
+ * Picking Uint16 unconditionally would silently corrupt rendering on a
+ * dense-enough chunk (indices wrapping mod 65,536); picking Uint32
+ * unconditionally would give up half the index-buffer memory savings on
+ * every ordinary chunk for a case that essentially never happens.
+ */
+const MAX_UINT16_VERTEX_COUNT = 65_536;
+
 /** One mesh group's vertex attributes as typed arrays — the wire format sent back from a mesher worker via transferable `ArrayBuffer`s. */
 export interface MeshBuffers {
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
+  /** `Uint16Array` when the group's vertex count fits, `Uint32Array` otherwise — see `MAX_UINT16_VERTEX_COUNT`. */
+  indices: Uint16Array | Uint32Array;
 }
 
 function groupToBuffers(group: MeshGroup): MeshBuffers | null {
   if (group.positions.length === 0) return null;
+  const vertexCount = group.positions.length / 3;
+  const indices =
+    vertexCount <= MAX_UINT16_VERTEX_COUNT ? Uint16Array.from(group.indices) : Uint32Array.from(group.indices);
   return {
     positions: Float32Array.from(group.positions),
     normals: Float32Array.from(group.normals),
     colors: Float32Array.from(group.colors),
+    indices,
   };
 }
 

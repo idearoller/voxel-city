@@ -19,6 +19,13 @@ integrated-GPU MacBook — and it's why the ~24-chunk/~433K-triangle estimate
 below was never actually true in practice; it was a description of what
 *should* be visible, not what the renderer was culling.
 
+**Note (Task 33):** "non-indexed" and "~530MB" above describe the mesher as
+it stood at Task 30. Task 33 (see the section near the end of this file)
+switched to indexed geometry, cutting that resident figure by roughly a
+quarter to a third depending on index width — the number is left as
+originally measured here since it's what caused and characterizes the Task
+30 incident being documented, not a claim about current memory use.
+
 The fix (`src/engine/ChunkVisibility.ts` + `ChunkRenderer.update()`) adds an
 explicit, fog-aware distance cull: every allocated chunk's nearest point to
 the camera is checked each frame against `CULL_RADIUS`, and chunks beyond it
@@ -262,3 +269,88 @@ revert-probe tests in `AudioSystem.test.ts`/`FlybyGraph.test.ts` that drive
 identical state across several ticks and assert no additional
 `setTargetAtTimeCalls` are recorded on the fake context, then confirm a
 genuine change still issues one.
+
+## Task 33: indexed chunk geometry
+
+Tasks 30-32 addressed steady-state GPU/CPU load; this task cuts resident
+vertex memory instead — the ~530MB figure from Task 30's incident writeup
+(above) came from `ChunkGeometryBuilder` never calling `setIndex`: every
+quad face emitted 6 flat (non-indexed) vertices for its 2 triangles, with no
+reuse even between the 2 triangles of the *same* quad, which share 2 of
+their 3 vertices by construction.
+
+**Change:** `ChunkMesher.buildChunkMeshDataFromSnapshot` now emits 4 unique
+vertices per exposed face plus 6 indices (`[0,1,2, 0,2,3]`, relative to that
+face's own 4-vertex block) describing its 2 triangles, per material group.
+Vertices are still never shared *across* faces — each face bakes its own
+AO levels and flat normal, so a shared vertex would average/overwrite one
+face's shading with its neighbor's — only the 2 co-planar triangles of one
+quad share vertices. `ChunkGeometryBuilder.buffersToGeometry` now calls
+`geometry.setIndex(...)`; disposal is unaffected (`THREE.BufferGeometry
+.dispose()` already tears down the index attribute alongside position/
+normal/color — `ChunkRenderer.disposeChunk` was never disposing attributes
+individually, so no change was needed there).
+
+**Index type: `Uint16Array` or `Uint32Array`, chosen per material-group
+buffer from its actual vertex count** (`ChunkMesher.groupToBuffers`, see
+`MAX_UINT16_VERTEX_COUNT`'s doc comment). A chunk is 32^3 = 32,768 voxels;
+the worst case for a *single* material group is every voxel solid, arranged
+so every one of its 6 faces is exposed (a 3D-checkerboard fill where every
+solid voxel's axis-neighbors are all air) — half the chunk's voxels
+(16,384) x 6 faces x 4 unique vertices = 393,216 vertices in one group, over
+6x past `Uint16Array`'s 65,535-index ceiling. That's an unlikely shape for
+real generated-city content but a legitimate reachable state of this data
+structure — nothing upstream rules it out — so picking `Uint16Array`
+unconditionally would silently corrupt rendering on a dense-enough chunk
+(indices wrapping mod 65,536, i.e. some triangles pointing at the wrong
+vertex data entirely). Picking `Uint32Array` unconditionally would instead
+give up half the index-buffer memory saving on every ordinary chunk, for a
+case that in practice essentially never happens. `test/ChunkMesher.test.ts`
+covers both sides of the cutover: a synthetic checkerboard-filled chunk
+(393,216 vertices) asserts `Uint32Array` and checks every index still
+resolves to a real vertex; an ordinary single-voxel chunk asserts
+`Uint16Array`.
+
+**Proving rendering is unchanged.** A vertex-count drop alone doesn't prove
+equivalence — it would pass even if winding flipped, an AO level landed on
+the wrong corner, or a face were silently dropped along with its now-unused
+vertices. `test/ChunkMesherIndexingEquivalence.test.ts` keeps a frozen,
+test-only copy of the pre-Task-33 non-indexed emission (verbatim `FACES`
+table, corner-AO math, shading — duplicated rather than re-imported, so it's
+immune to any future edit to the real mesher) and, for a representative
+sample of chunks from a real `generateCity` output plus the pathological
+checkerboard chunk, de-indexes the current mesher's output back into
+triangles and asserts the two triangle *sets* are identical: same count,
+same members, each triangle's own winding order and per-vertex position/
+normal/color preserved exactly (no epsilon), compared order-independently
+across the group (chunk/group iteration order was never semantically
+meaningful). `test/MesherScheduler.test.ts`'s existing worker/sync parity
+test and `test/ChunkMesher.test.ts`'s face-culling/AO suites were updated
+for the new 4-verts-per-face/index-buffer shape rather than left asserting
+the old 6-verts-per-face layout.
+
+**Memory math**, using this seed's measured `totalTriangles=4,946,998`
+(`MesherPerf.test.ts`; faces = triangles / 2, since every face is exactly 2
+triangles):
+
+- Per-vertex attribute cost is unchanged: position + normal + color = 3+3+3
+  floats x 4 bytes = 36 bytes/vertex, whichever mesher emits it.
+- **Before:** 6 non-indexed vertices/face, no index buffer.
+  `4,946,998 x 3 vertices x 36 bytes ≈ 534.3MB` (matches the ~530MB Task 30
+  figure).
+- **After:** 4 unique vertices/face + 6 indices/face.
+  Vertex buffers: `(4,946,998 / 2) x 4 vertices x 36 bytes ≈ 356.2MB` — a
+  33.3% cut, exactly the 6-to-4 vertex-count ratio, as expected since
+  per-vertex cost didn't change.
+  Index buffers (typical real-city case, `Uint16Array`):
+  `4,946,998 x 3 indices x 2 bytes ≈ 29.7MB`.
+  **Total ≈ 386MB, down from ≈534MB — a ~27.7% cut** in resident chunk
+  geometry memory citywide. (The worst-case all-`Uint32Array` city would
+  still total `356.2MB + 59.4MB ≈ 415.6MB`, a ~22% cut — still a net win
+  even if every chunk happened to hit the checkerboard-pathological case,
+  which real generated cities don't.)
+
+This is a pure memory/bandwidth win, not a triangle-throughput one — the
+"Decision: greedy meshing is NOT warranted" analysis above is about
+in-frustum *triangle* count, which indexing doesn't change (same 2
+triangles per face either way), so that decision stands unaffected.

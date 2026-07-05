@@ -18,10 +18,10 @@ import { World } from '../src/world/World';
  * produce, without being flaky on ordinary machine-to-machine variance.
  */
 
-/** Vertex positions are 3 floats each, 3 vertices per triangle. */
+/** Indexed geometry: 3 indices per triangle. */
 function triangleCount(data: ChunkMeshData): number {
   const groups = [data.solid, data.road, data.windowLit, ...data.neon];
-  return groups.reduce((sum, group) => sum + group.positions.length / 9, 0);
+  return groups.reduce((sum, group) => sum + group.indices.length / 3, 0);
 }
 
 describe('mesher performance (real generated-city chunks)', () => {
