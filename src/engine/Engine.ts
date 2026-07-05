@@ -1,7 +1,5 @@
 import * as THREE from 'three';
-
-const FIXED_TIMESTEP = 1 / 60;
-const MAX_FRAME_DELTA = 0.25;
+import { computeFixedSteps, FIXED_TIMESTEP } from './FixedTimestep';
 
 export interface EngineCallbacks {
   /** Called at a fixed 60Hz cadence for deterministic simulation logic. */
@@ -100,14 +98,19 @@ export class Engine {
     this.rafHandle = requestAnimationFrame(this.tick);
     if (!this.callbacks) return;
 
-    let frameDelta = (now - this.lastTime) / 1000;
+    const frameDelta = (now - this.lastTime) / 1000;
     this.lastTime = now;
-    frameDelta = Math.min(frameDelta, MAX_FRAME_DELTA);
 
-    this.accumulator += frameDelta;
-    while (this.accumulator >= FIXED_TIMESTEP) {
+    // computeFixedSteps (FixedTimestep.ts) both advances the accumulator and
+    // caps catch-up steps at MAX_STEPS_PER_FRAME, dropping any backlog beyond
+    // the cap. That subsumes what a raw frameDelta clamp (e.g. capping at
+    // 0.25s/15 steps) would do: bounding steps directly bounds worst-case sim
+    // CPU per frame regardless of how large frameDelta gets, so there's no
+    // separate delta clamp to keep in sync with it.
+    const { steps, accumulator } = computeFixedSteps(this.accumulator, frameDelta);
+    this.accumulator = accumulator;
+    for (let i = 0; i < steps; i++) {
       this.callbacks.update(FIXED_TIMESTEP);
-      this.accumulator -= FIXED_TIMESTEP;
     }
 
     const alpha = this.accumulator / FIXED_TIMESTEP;

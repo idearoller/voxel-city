@@ -152,3 +152,47 @@ specifically so this remains a cheap decision to revisit — e.g. if a future
 mobile/low-end-GPU target changes the throughput margin above, or if a
 denser building style pushes the frustum estimate up materially. Desktop,
 today, it doesn't.
+
+## Task 31: capping fixed-timestep catch-up steps per frame
+
+Task 30 fixed the steady-state GPU load that was thermal-throttling the
+reporter's MacBook. That throttling had a second-order effect on the sim
+side that hadn't been addressed: `Engine.tick`'s fixed-timestep accumulator
+loop (`while (accumulator >= FIXED_TIMESTEP) update(...)`) had no cap on how
+many catch-up steps it would run in a single rendered frame, only a clamp on
+the raw per-frame delta fed into the accumulator (`MAX_FRAME_DELTA = 0.25s`,
+i.e. up to `0.25 / (1/60) = 15` steps). Once rendering itself slows down —
+from thermal throttling, a GC pause, or the tab regaining focus after being
+backgrounded — the sim starts paying that backlog back at up to 15×
+`update()` calls per frame (elevator sim, collision, atmosphere, rain, full
+entity simulation including spawner scans, audio mix). That extra CPU work
+compounds the very slowdown that created the backlog: steady state under
+throttle was 15 steps every frame at ~4fps, CPU pegged alongside the GPU,
+machine effectively seized.
+
+**Decision: cap catch-up at `MAX_STEPS_PER_FRAME = 4` steps/frame, and drop
+any backlog beyond the cap instead of carrying it.** Bounding steps directly
+bounds worst-case sim CPU per frame (4x steady-state cost, not 15x)
+regardless of how large a single frame's elapsed time gets, which makes the
+separate `MAX_FRAME_DELTA` delta-clamp redundant — it's been removed in
+favor of the step cap so there's exactly one mechanism controlling catch-up
+work, not two that could silently drift out of sync. When the cap is hit,
+the accumulator resets to 0 rather than keeping the true (much larger)
+remainder: carrying it would just defer the same 4-step catch-up burst,
+forever, to every subsequent frame for as long as the overload lasts. Under
+sustained overload the game clock falls behind wall-clock time — the world
+runs in slow motion — rather than CPU usage spiraling. For a single-player
+sandbox game, a slower clock is the correct tradeoff against a seized
+machine; there's no multiplayer lockstep or replay-determinism requirement
+here that a lagging clock would break.
+
+The accumulator arithmetic was extracted into a pure function,
+`computeFixedSteps` (`src/engine/FixedTimestep.ts`), specifically so it's
+unit-testable — `Engine.ts` itself has no tests because it needs a real
+`window`/WebGL context (see its class doc comment), so this was the way to
+put real coverage on the cap: `test/FixedTimestep.test.ts` covers dt smaller
+than one step (0 steps, full carry), an exact multiple of steps, a
+sub-step remainder alongside whole steps, accumulating leftover across
+frames, hitting the cap exactly (no drop), and exceeding it (steps clamped
+to the cap, accumulator dropped to 0 and not carried into the next frame's
+computation).
