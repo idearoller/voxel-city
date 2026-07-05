@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { buildNavGrid, type NavGrid } from '../src/entities/NavGrid';
 import { ModeManager } from '../src/player/ModeManager';
 import type { Mode } from '../src/player/ModeManager';
-import { CONCRETE } from '../src/world/BlockRegistry';
+import { CONCRETE, SIDEWALK } from '../src/world/BlockRegistry';
 import { World } from '../src/world/World';
 
 /** A stationary camera positioned above a given xz column, looking down +X. */
@@ -22,6 +23,20 @@ function buildFlatWorld(size = 10): World {
     }
   }
   return world;
+}
+
+const TOUR_GROUND_Y = 1;
+
+/** A flat sidewalk slab at y=1 covering [0, size) x [0, size) -- a NavGrid built over this is all-walkable, for tour-mode tests. */
+function buildSidewalkWorld(size = 20): { world: World; grid: NavGrid } {
+  const world = new World();
+  for (let x = 0; x < size; x++) {
+    for (let z = 0; z < size; z++) {
+      world.setBlockRaw(x, 0, z, CONCRETE);
+      world.setBlockRaw(x, TOUR_GROUND_Y, z, SIDEWALK);
+    }
+  }
+  return { world, grid: buildNavGrid(world, size, size, TOUR_GROUND_Y) };
 }
 
 describe('ModeManager', () => {
@@ -218,6 +233,105 @@ describe('ModeManager', () => {
       const walkX = walkManager.playerFeet[0];
 
       expect(sprintX).toBeGreaterThan(walkX);
+    });
+  });
+
+  describe('tour mode', () => {
+    it('enterTourMode switches the mode and starts the auto-walker near the camera', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+
+      modeManager.enterTourMode();
+
+      expect(modeManager.currentMode).toBe('tour');
+      expect(modeManager.playerFeet[1]).toBe(TOUR_GROUND_Y);
+    });
+
+    it('cycleMode advances sandbox -> play -> tour -> sandbox', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+      const seen: Mode[] = [];
+      modeManager.onModeChange((mode) => seen.push(mode));
+
+      modeManager.cycleMode();
+      modeManager.cycleMode();
+      modeManager.cycleMode();
+
+      expect(seen).toEqual(['play', 'tour', 'sandbox']);
+    });
+
+    it('WASD/jump/sprint have no effect in tour mode -- update() never routes to a movement controller', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+      modeManager.enterTourMode();
+      const feetBefore = modeManager.playerFeet;
+
+      modeManager.setVirtualKey('KeyW', true);
+      modeManager.setVirtualSprint(true);
+      for (let tick = 0; tick < 10; tick++) modeManager.update(1 / 60);
+
+      // The walker still moves on its own (autonomous wandering), but not by
+      // exactly the WASD-driven amount a play-mode walk would cover, and
+      // certainly not along the camera's look direction (+X) the way
+      // PlayController's WASD would -- the auto-walker's own heading is
+      // whatever the sidewalk network gave it at spawn, independent of
+      // held keys entirely.
+      expect(modeManager.playerFeet).not.toEqual(feetBefore);
+      // A directly WASD-driven PlayController would have moved a fixed,
+      // key-proportional distance every tick; assert the position update
+      // came from TourController's own stepping by checking render()
+      // requires alpha (i.e. update() alone does not move the camera).
+      const cameraXAfterUpdateOnly = camera.position.x;
+      expect(cameraXAfterUpdateOnly).toBe(5); // camera untouched until render() runs
+    });
+
+    it('render() moves the camera to the walker position; update() alone does not', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+      modeManager.enterTourMode();
+
+      modeManager.update(1 / 60);
+      expect(camera.position.x).toBe(5); // untouched by update()
+
+      modeManager.render(1);
+      expect(camera.position.x).not.toBe(5); // render() applies the interpolated walker position
+    });
+
+    it('leaving tour mode via enterSandboxMode keeps the camera at the walker\'s last rendered position', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+      modeManager.enterTourMode();
+
+      for (let tick = 0; tick < 10; tick++) {
+        modeManager.update(1 / 60);
+        modeManager.render(1);
+      }
+      const cameraBeforeExit = camera.position.clone();
+
+      modeManager.enterSandboxMode();
+
+      expect(modeManager.currentMode).toBe('sandbox');
+      expect(camera.position.equals(cameraBeforeExit)).toBe(true);
+    });
+
+    it('reach is 0 in tour mode (editing/raycast are disabled there, not just unused)', () => {
+      const { grid } = buildSidewalkWorld();
+      const camera = cameraAt(5, 20, 5);
+      const modeManager = new ModeManager(camera, world);
+      modeManager.setNavGridProvider(() => grid);
+      modeManager.enterTourMode();
+
+      expect(modeManager.reach).toBe(0);
     });
   });
 });

@@ -2,7 +2,8 @@ import type { Mode } from '../player/ModeManager';
 
 const HINTS: Record<Mode, string> = {
   sandbox: 'WASD + Space/Shift fly · Ctrl sprint · LMB remove · RMB place · Tab: play mode',
-  play: 'WASD walk · Shift sprint · Space jump · LMB remove · RMB place · Tab: sandbox mode',
+  play: 'WASD walk · Shift sprint · Space jump · LMB remove · RMB place · Tab: tour mode',
+  tour: 'Mouse look only — walking the city automatically · Tab: sandbox mode',
 };
 
 const ELEVATOR_HINT = 'E: up · Q: down';
@@ -51,6 +52,7 @@ export class Hud {
 
     this.modeEl.textContent = mode.toUpperCase();
     this.modeEl.classList.toggle('play', mode === 'play');
+    this.modeEl.classList.toggle('tour', mode === 'tour');
     this.hintEl.textContent = HINTS[mode];
 
     if (changed) this.flashModeIndicator();

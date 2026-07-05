@@ -41,6 +41,11 @@
   text-shadow: 0 0 6px rgba(255, 45, 149, 0.6);
 }
 
+.hud-mode.tour {
+  color: #baff2d;
+  text-shadow: 0 0 6px rgba(186, 255, 45, 0.6);
+}
+
 .hud-mode--flash {
   animation: hud-mode-flash 0.5s ease-out;
 }

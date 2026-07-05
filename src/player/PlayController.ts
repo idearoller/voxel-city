@@ -17,7 +17,8 @@ const WALK_SPEED = 4.5;
 const SPRINT_SPEED = 7;
 const GRAVITY = -27;
 const JUMP_VELOCITY = 8.4;
-const EYE_HEIGHT = 1.62;
+/** Exported so `TourController` can place its own auto-walking camera at the same eye height a play-mode player stands at — one first-person eye level shared by both modes. */
+export const EYE_HEIGHT = 1.62;
 /** How long a completed auto-step takes to visually smooth into the camera. */
 const STEP_SMOOTH_SECONDS = 0.08;
 

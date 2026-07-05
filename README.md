@@ -34,22 +34,37 @@ is no backend and no network calls once the page loads.
 
 ## Controls
 
-| Action | Sandbox mode (fly + edit) | Play mode (walk) |
-|---|---|---|
-| Move | WASD | WASD |
-| Vertical / jump | Space up, Shift down | Space to jump |
-| Sprint | Ctrl | Shift |
-| Look | Mouse (click canvas to lock pointer) | Mouse |
-| Remove voxel | Left click | Left click |
-| Place voxel | Right click | Right click |
-| Select block | Number keys 1-9/0, or mouse wheel | same |
-| Elevator up / down | — | E / Q (while standing in a shaft) |
-| Switch mode | Tab | Tab |
-| Mute / unmute ambient audio | M | M |
+There are three modes — **Tab** cycles sandbox → play → tour → sandbox:
+
+| Action | Sandbox mode (fly + edit) | Play mode (walk) | Tour mode (auto-walk) |
+|---|---|---|---|
+| Move | WASD | WASD | — (automatic) |
+| Vertical / jump | Space up, Shift down | Space to jump | — |
+| Sprint | Ctrl | Shift | — |
+| Look | Mouse (click canvas to lock pointer) | Mouse | Mouse |
+| Remove voxel | Left click | Left click | — |
+| Place voxel | Right click | Right click | — |
+| Select block | Number keys 1-9/0, or mouse wheel | same | — |
+| Elevator up / down | — | E / Q (while standing in a shaft) | — |
+| Switch mode | Tab | Tab | Tab |
+| Mute / unmute ambient audio | M | M | M |
 
 Play mode adds gravity, collision, and single-voxel auto-stepping (like
 climbing stairs); sandbox mode ignores collision entirely so you can fly
 anywhere to build.
+
+Tour mode drops you into a first-person camera that walks the city on its
+own, like one of the city's own pedestrian NPCs — picking a direction at
+every intersection, reversing at dead ends, and climbing stairs to/from
+skybridges and walkways exactly the way pedestrians already do (it walks the
+same navigation grid, see `src/player/TourWalker.ts`). Mouse look is the
+*only* input that does anything: WASD, jump, sprint, and voxel editing are
+all inert, and the aim-highlight box is hidden the whole time since there's
+nothing to edit. If the walker ever gets stranded (an isolated, unreachable
+patch of sidewalk), it quietly respawns somewhere else walkable and keeps
+going — touring never gets stuck. Entering tour starts the walk from
+wherever your camera already was; leaving it (Tab again) hands control back
+at that same spot.
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
@@ -87,10 +102,10 @@ appears the moment you actually touch the screen):
 |---|---|
 | Move | Left half of the screen: touch down anywhere to spawn a floating joystick there, drag to move |
 | Look | Right half of the screen: drag to rotate the camera |
-| Edit voxel | Right half: a short tap (not a drag) edits the block under the crosshair — remove or place, per the −/+ button |
+| Edit voxel | Right half: a short tap (not a drag) edits the block under the crosshair — remove or place, per the −/+ button (no-op in tour mode) |
 | Jump (play mode) | ⏶ button |
 | Fly up / down (sandbox mode) | ▲ / ▼ buttons |
-| Switch mode | ⇄ button |
+| Switch mode (sandbox → play → tour → sandbox) | ⇄ button |
 | Place/remove toggle | −/+ button |
 | Mute / unmute | 🔊 button |
 | Select block | Tap a palette swatch |
@@ -145,7 +160,9 @@ src/
               QualityPreference/QualityParams (Low/Medium/High render
               quality toggle — pure tier persistence + tier->params map).
   player/     Sandbox fly controller, first-person walk controller with
-              AABB-vs-voxel collision + auto-step, mode switching, look
+              AABB-vs-voxel collision + auto-step, tour mode's auto-walking
+              NPC-like camera (reuses entities/'s pedestrian wander + stair
+              logic, render-interpolated like an NPC), mode switching, look
               controls, voxel raycasting.
   input/      Touch input: capability detection, floating-joystick math,
               tap-vs-drag gesture classification, and the DOM-free

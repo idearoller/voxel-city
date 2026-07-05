@@ -2,10 +2,11 @@ import * as THREE from 'three';
 import { FlyController } from './FlyController';
 import { PlayController, type SupportProviderFn } from './PlayController';
 import { findSpawnFeet } from './PlayerCollision';
+import { TourController, type NavGridProvider } from './TourController';
 import { WORLD_SIZE_Y } from '../world/coords';
 import type { World } from '../world/World';
 
-export type Mode = 'sandbox' | 'play';
+export type Mode = 'sandbox' | 'play' | 'tour';
 
 export const SANDBOX_REACH = 60;
 export const PLAY_REACH = 8;
@@ -18,15 +19,20 @@ const SAFE_SPAWN_Y = 10;
 export type ModeChangeListener = (mode: Mode) => void;
 
 /**
- * Owns the sandbox <-> play switch (Tab). Sandbox drives the camera via
- * FlyController; play drives it via PlayController with gravity/collision.
- * Both share the same camera and LookControls instance owned by main.ts.
+ * Owns the sandbox -> play -> tour -> sandbox switch (Tab cycles through all
+ * three). Sandbox drives the camera via FlyController; play drives it via
+ * PlayController with gravity/collision; tour drives it via TourController,
+ * an auto-walking pedestrian-like body on the city's NavGrid (see
+ * `TourController.ts`) that only mouse look can steer. All three share the
+ * same camera and LookControls instance owned by main.ts.
  */
 export class ModeManager {
   private mode: Mode = 'sandbox';
   private readonly listeners: ModeChangeListener[] = [];
   private readonly flyController: FlyController;
   private readonly playController: PlayController;
+  private readonly tourController: TourController;
+  private navGridProvider: NavGridProvider | null = null;
 
   constructor(
     private readonly camera: THREE.Camera,
@@ -34,6 +40,7 @@ export class ModeManager {
   ) {
     this.flyController = new FlyController(camera);
     this.playController = new PlayController(camera, world);
+    this.tourController = new TourController(camera, () => this.navGridProvider?.() ?? null);
     // Guarded so ModeManager can be constructed in non-browser contexts
     // (unit/integration tests) that drive mode transitions via
     // enterPlayMode()/enterSandboxMode() directly.
@@ -47,12 +54,18 @@ export class ModeManager {
   }
 
   get reach(): number {
-    return this.mode === 'sandbox' ? SANDBOX_REACH : PLAY_REACH;
+    if (this.mode === 'sandbox') return SANDBOX_REACH;
+    if (this.mode === 'play') return PLAY_REACH;
+    // Tour mode disables voxel raycasting/editing entirely (main.ts gates
+    // both the crosshair highlight and click-to-edit on `currentMode !==
+    // 'tour'`) -- this value is never actually consulted, but 0 documents
+    // "no reach" rather than silently reusing PLAY_REACH's number.
+    return 0;
   }
 
-  /** The AABB-relevant feet position, only meaningful in play mode. */
+  /** The AABB-relevant feet position in play mode, or the tour walker's current feet position in tour mode; meaningless (and unused) in sandbox. */
   get playerFeet(): readonly [number, number, number] {
-    return this.playController.getFeet();
+    return this.mode === 'tour' ? this.tourController.getFeet() : this.playController.getFeet();
   }
 
   onModeChange(listener: ModeChangeListener): void {
@@ -62,6 +75,17 @@ export class ModeManager {
   /** Forwards to the play controller's moving-support wiring (see `PlayController.setSupportProvider`) — e.g. `ElevatorSystem.supportAt`. */
   setSupportProvider(provider: SupportProviderFn | null): void {
     this.playController.setSupportProvider(provider);
+  }
+
+  /**
+   * Wires the live city's navigation grid into tour mode (see
+   * `TourController`'s `NavGridProvider`) — e.g. `() => entitySystem.navGrid`.
+   * Not passed via the constructor because the first real `NavGrid` doesn't
+   * exist until the first city generation/import completes, well after
+   * `ModeManager` itself is constructed.
+   */
+  setNavGridProvider(provider: NavGridProvider | null): void {
+    this.navGridProvider = provider;
   }
 
   /**
@@ -97,23 +121,41 @@ export class ModeManager {
     this.flyController.setKey('ControlLeft', pressed);
   }
 
+  /** Fixed 60Hz simulation tick — routes to whichever controller is active. Tour's camera write happens later, in `render()`, not here (see `TourController`'s doc comment on why it's interpolated instead of stepped). */
   update(dt: number): void {
     if (this.mode === 'sandbox') {
       this.flyController.update(dt);
-    } else {
+    } else if (this.mode === 'play') {
       this.playController.update(dt);
+    } else {
+      this.tourController.update(dt);
     }
+  }
+
+  /**
+   * Per-render-frame camera placement for modes that need render-time
+   * interpolation. Sandbox/play write `camera.position` directly inside
+   * their own fixed-tick `update()` (immediate WASD response matters more
+   * than smoothing there); tour instead lerps between its walker's previous
+   * and current tick position by `alpha`, the same treatment `EntityRenderer`
+   * gives every NPC — see `TourController.render`'s doc comment.
+   */
+  render(alpha: number): void {
+    if (this.mode === 'tour') this.tourController.render(alpha);
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
     if (event.code !== 'Tab') return;
     event.preventDefault();
-    this.toggle();
+    this.cycleMode();
   };
 
-  private toggle(): void {
+  /** Advances sandbox -> play -> tour -> sandbox. Public (not just the Tab handler's private helper) so touch input's mode-switch button drives the exact same 3-way order — see `TouchControlsUI`'s mode button wiring in main.ts. */
+  cycleMode(): void {
     if (this.mode === 'sandbox') {
       this.enterPlayMode();
+    } else if (this.mode === 'play') {
+      this.enterTourMode();
     } else {
       this.enterSandboxMode();
     }
@@ -137,6 +179,25 @@ export class ModeManager {
   /** Switches to sandbox (fly) mode, keeping the camera at its current position. */
   enterSandboxMode(): void {
     this.mode = 'sandbox';
+    this.emitModeChange();
+  }
+
+  /**
+   * Switches to tour mode and starts the auto-walking NPC from the nearest
+   * walkable sidewalk cell to the camera's *current* xz — read before the
+   * mode flips, so entering from sandbox or play both hand off from
+   * "roughly where the player already was" rather than a fixed spot. Leaving
+   * tour (via `enterPlayMode`/`enterSandboxMode`) needs no matching
+   * special-case: tour's own `render()` keeps the camera sitting exactly on
+   * the walker's position every frame, so by the time either exit runs, the
+   * camera is already positioned correctly for `enterPlayMode`'s
+   * below-the-camera ground scan or `enterSandboxMode`'s "stay put".
+   */
+  enterTourMode(): void {
+    const x = this.camera.position.x;
+    const z = this.camera.position.z;
+    this.mode = 'tour';
+    this.tourController.start(x, z);
     this.emitModeChange();
   }
 

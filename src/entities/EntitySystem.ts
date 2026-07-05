@@ -36,7 +36,7 @@
 
 import * as THREE from 'three';
 import { DEFAULT_ENTITY_CONFIG, EntitySimulation, type EntitySimulationConfig } from './EntitySimulation';
-import { buildNavGrid } from './NavGrid';
+import { buildNavGrid, type NavGrid } from './NavGrid';
 import { deriveSkyLanes } from './SkyLane';
 import { EntityRenderer } from '../engine/EntityRenderer';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../world/coords';
@@ -51,10 +51,22 @@ export class EntitySystem {
   private readonly renderer: EntityRenderer;
   private groundY = 0;
   private elapsedTime = 0;
+  private grid: NavGrid | null = null;
 
   constructor(scene: THREE.Scene, config: EntitySimulationConfig = DEFAULT_ENTITY_CONFIG) {
     this.simulation = new EntitySimulation(config);
     this.renderer = new EntityRenderer(scene, config.maxPedestrians, config.maxVehicles, config.maxFlyingVehicles);
+  }
+
+  /**
+   * The current city's navigation grid, or null before the first `rebuild()`
+   * — consumed by `player/TourController` (via `ModeManager.setNavGridProvider`)
+   * so tour mode's auto-walking camera walks the same sidewalk/stair/deck
+   * network real pedestrians do, without `player/` ever holding a reference
+   * to the live entity population itself.
+   */
+  get navGrid(): NavGrid | null {
+    return this.grid;
   }
 
   /**
@@ -69,6 +81,7 @@ export class EntitySystem {
     this.groundY = groundY;
     const grid = buildNavGrid(world, WORLD_SIZE_X, WORLD_SIZE_Z, groundY);
     const skyLanes = deriveSkyLanes(world, grid.road, WORLD_SIZE_X, WORLD_SIZE_Z);
+    this.grid = grid;
     this.simulation.reset(grid, seed, skyLanes);
   }
 

@@ -196,6 +196,11 @@ function scheduleEnvironmentRefresh(): void {
 const lookControls = new LookControls(engine.camera, canvas);
 const modeManager = new ModeManager(engine.camera, world);
 modeManager.setSupportProvider((feet) => elevatorSystem.supportAt(feet));
+// Tour mode's auto-walking camera needs the city's current NavGrid (rebuilt
+// on every generation/import, see EntitySystem.rebuild) -- wired as a
+// provider function, not a one-time value, since the very first real grid
+// doesn't exist until the first runGeneration() below completes.
+modeManager.setNavGridProvider(() => entitySystem.navGrid);
 
 const hud = new Hud(uiRoot);
 const palette = new Palette(uiRoot, canvas);
@@ -231,8 +236,9 @@ window.addEventListener('keydown', (event) => {
 // ---------------------------------------------------------------------------
 let touchEditMode: 'place' | 'remove' = 'remove';
 
-/** Edits the voxel under the crosshair (screen center) — the same aim point `currentHit()` already uses for the highlight box and desktop mouse edits, so touch aiming (look-drag driven) and mouse aiming (pointer-lock driven) behave identically: neither depends on where the triggering touch/click landed on screen. */
+/** Edits the voxel under the crosshair (screen center) — the same aim point `currentHit()` already uses for the highlight box and desktop mouse edits, so touch aiming (look-drag driven) and mouse aiming (pointer-lock driven) behave identically: neither depends on where the triggering touch/click landed on screen. No-op in tour mode — see the desktop `mousedown` handler's matching guard below for why. */
 function performTouchEdit(): void {
+  if (modeManager.currentMode === 'tour') return;
   const hit = currentHit();
   if (!hit) return;
   if (touchEditMode === 'remove') {
@@ -244,13 +250,9 @@ function performTouchEdit(): void {
 
 const touchControlsUI = new TouchControlsUI(uiRoot, {
   setKey: (code, pressed) => modeManager.setVirtualKey(code, pressed),
-  onModeToggle: () => {
-    if (modeManager.currentMode === 'sandbox') {
-      modeManager.enterPlayMode();
-    } else {
-      modeManager.enterSandboxMode();
-    }
-  },
+  // Same sandbox -> play -> tour -> sandbox order as the desktop Tab key
+  // (ModeManager.cycleMode is the single source of truth for that order).
+  onModeToggle: () => modeManager.cycleMode(),
   onMuteToggle: () => toggleMute(),
 });
 touchControlsUI.onEditModeChange((mode) => {
@@ -326,6 +328,12 @@ function placeVoxelAt(hit: RayHit): void {
 
 canvas.addEventListener('mousedown', (event) => {
   if (document.pointerLockElement !== canvas) return;
+  // Tour mode's only live input is mouse look (product spec) — block/place
+  // editing is deliberately inert here, same as WASD/jump/sprint (those go
+  // inert because ModeManager.update never routes to a movement controller
+  // in tour mode; editing needs its own guard since it's wired directly to
+  // this DOM listener, not through ModeManager at all).
+  if (modeManager.currentMode === 'tour') return;
 
   const hit = currentHit();
   if (!hit) return;
@@ -531,7 +539,10 @@ engine.start({
     audioSystem.update({
       timeOfDay: atmosphere.currentTimeOfDay,
       rainIntensity: rain.enabled ? rain.intensity : 0,
-      isPlayMode: modeManager.currentMode === 'play',
+      // Tour mode is street-level and first-person exactly like play mode
+      // (just auto-walking instead of player-driven) -- it gets the same
+      // fuller ambient mix, not sandbox's quieter fly-above attenuation.
+      isPlayMode: modeManager.currentMode === 'play' || modeManager.currentMode === 'tour',
     });
 
     // Positional hover-car flyby: EntitySystem converts live flying
@@ -549,6 +560,12 @@ engine.start({
     audioSystem.updateFlybys(nearbyFlyerScratch, { x: cameraRightScratch.x, z: cameraRightScratch.z });
   },
   render: (alpha) => {
+    // Tour mode's camera is render-interpolated (walker prev/current tick,
+    // lerped by alpha) rather than stepped in the fixed update() above --
+    // see ModeManager.render / TourController.render's doc comments. Must
+    // run before currentHit() below reads the camera's position.
+    modeManager.render(alpha);
+
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):
     // after a stall the accumulator can replay update() many times in one
     // frame, and running the rebuild budget there would blow past the
@@ -564,7 +581,11 @@ engine.start({
       elevatorSystem.shaftAt(modeManager.playerFeet[0], modeManager.playerFeet[2]) !== null;
     hud.setElevatorHint(inElevator);
 
-    const hit = currentHit();
+    // Tour mode has no editing at all (product spec: mouse look is the only
+    // live input), so the aim raycast never runs and the highlight box never
+    // shows -- not just "nothing to click," an active highlight box would be
+    // a UI lie about a lever (edit) that doesn't exist in this mode.
+    const hit = modeManager.currentMode === 'tour' ? null : currentHit();
     if (hit) {
       highlightBox.position.set(hit.pos[0] + 0.5, hit.pos[1] + 0.5, hit.pos[2] + 0.5);
       highlightBox.visible = true;
