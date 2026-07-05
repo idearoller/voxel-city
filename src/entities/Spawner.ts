@@ -181,6 +181,33 @@ export function pickFlyingVehicleSpawn(
   return null;
 }
 
+/**
+ * True if (x, z) is at least `minGap` away from every position in
+ * `occupied` — used to keep a newly-spawned vehicle from popping into
+ * existence overlapping one already there. Deliberately a plain 2D distance
+ * check against *every* existing vehicle, not just same-lane ones: at spawn
+ * time a ground vehicle doesn't have a heading yet (see `Vehicle.ts`'s
+ * `createVehicleAt`) and a flying vehicle's direction is only decided the
+ * same instant it's placed, so there's no lane identity yet to filter
+ * by — a citywide "nothing else is this close" check is the simplest thing
+ * that's still always safe, and at this population size (dozens, not
+ * thousands) an O(n) scan per spawn attempt is negligible.
+ */
+export function isSpawnClearOfVehicles(
+  x: number,
+  z: number,
+  occupied: readonly { x: number; z: number }[],
+  minGap: number,
+): boolean {
+  const minGapSq = minGap * minGap;
+  for (const vehicle of occupied) {
+    const dx = x - vehicle.x;
+    const dz = z - vehicle.z;
+    if (dx * dx + dz * dz < minGapSq) return false;
+  }
+  return true;
+}
+
 /** True once (entityX, entityZ) is farther than `despawnRadius` from the player — the entity should be removed. */
 export function isBeyondDespawnRadius(
   entityX: number,

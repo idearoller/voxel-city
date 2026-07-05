@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createFlyingVehicleOnLane, stepFlyingVehicle } from '../src/entities/FlyingVehicle';
+import {
+  applyFlyingVehicleFollowSpacing,
+  createFlyingVehicleOnLane,
+  FLYING_VEHICLE_FOLLOW_DISTANCE,
+  FLYING_VEHICLE_MIN_SEPARATION,
+  stepFlyingVehicle,
+  type FlyingVehicle,
+} from '../src/entities/FlyingVehicle';
 import type { SkyLane } from '../src/entities/SkyLane';
 
 const WIDTH = 400;
@@ -85,5 +92,85 @@ describe('stepFlyingVehicle', () => {
 
     expect(vehicle.x).toBe(xBefore);
     expect(vehicle.alive).toBe(false);
+  });
+});
+
+describe('applyFlyingVehicleFollowSpacing', () => {
+  const lane = makeLane({ axis: 'x', fixed: 200 });
+
+  it('never lets a same-lane follower closer than FLYING_VEHICLE_MIN_SEPARATION to its leader', () => {
+    const lead = createFlyingVehicleOnLane(lane, 100 + FLYING_VEHICLE_MIN_SEPARATION - 1, 1, 20);
+    const rear = createFlyingVehicleOnLane(lane, 100, 1, 20);
+
+    applyFlyingVehicleFollowSpacing([lead, rear], 1 / 60);
+
+    expect(lead.x - rear.x).toBeCloseTo(FLYING_VEHICLE_MIN_SEPARATION, 10);
+  });
+
+  it('slows a follower toward a slower leader once the gap closes inside FLYING_VEHICLE_FOLLOW_DISTANCE', () => {
+    const midGap = (FLYING_VEHICLE_MIN_SEPARATION + FLYING_VEHICLE_FOLLOW_DISTANCE) / 2;
+    const lead = createFlyingVehicleOnLane(lane, 100 + midGap, 1, 10);
+    const rear = createFlyingVehicleOnLane(lane, 100, 1, 20);
+
+    applyFlyingVehicleFollowSpacing([lead, rear], 1); // 1s tick -- enough headroom for FLYING_VEHICLE_MAX_ACCEL to reach the target
+
+    expect(rear.speed).toBeLessThan(20);
+    expect(rear.speed).toBeLessThanOrEqual(lead.speed + 1e-9);
+  });
+
+  it('leaves a solo flyer cruising at its own speed (no leader in its lane)', () => {
+    const solo = createFlyingVehicleOnLane(lane, 100, 1, 18);
+    solo.speed = 10;
+
+    applyFlyingVehicleFollowSpacing([solo], 1);
+
+    expect(solo.speed).toBeCloseTo(18, 5);
+  });
+
+  it('does not affect opposite-direction flyers sharing the same physical lane (out of scope -- see module doc comment)', () => {
+    const forward = createFlyingVehicleOnLane(lane, 100, 1, 20);
+    const backward = createFlyingVehicleOnLane(lane, 100.5, -1, 20); // right next to each other, opposing headings
+
+    applyFlyingVehicleFollowSpacing([forward, backward], 1 / 60);
+
+    expect(forward.speed).toBe(20);
+    expect(backward.speed).toBe(20);
+  });
+
+  it('does not affect flyers on a different lane (different fixed cross-axis coordinate)', () => {
+    const lead = createFlyingVehicleOnLane(lane, 120, 1, 20);
+    const otherLane = makeLane({ axis: 'x', fixed: 210 });
+    const other = createFlyingVehicleOnLane(otherLane, 100, 1, 20);
+
+    applyFlyingVehicleFollowSpacing([lead, other], 1 / 60);
+
+    expect(other.speed).toBe(20);
+  });
+
+  it('soaks a same-lane pair over a long flight: no overlap and no teleport', () => {
+    const vehicles: FlyingVehicle[] = [
+      createFlyingVehicleOnLane(lane, 0, 1, 25),
+      createFlyingVehicleOnLane(lane, 20, 1, 15), // slower leader ahead
+    ];
+    const dt = 1 / 60;
+    const maxPerTickDisplacement = 25 * dt * 1.5;
+
+    for (let tick = 0; tick < 1200; tick++) {
+      const before = vehicles.map((v) => ({ x: v.x, z: v.z }));
+      for (const v of vehicles) stepFlyingVehicle(v, dt, WIDTH, DEPTH);
+      applyFlyingVehicleFollowSpacing(vehicles, dt);
+
+      for (let i = 0; i < vehicles.length; i++) {
+        const v = vehicles[i] as FlyingVehicle;
+        const prev = before[i] as { x: number; z: number };
+        const displacement = Math.hypot(v.x - prev.x, v.z - prev.z);
+        expect(displacement).toBeLessThanOrEqual(maxPerTickDisplacement);
+      }
+
+      const [rear, lead2] = vehicles as [FlyingVehicle, FlyingVehicle];
+      if (rear.alive && lead2.alive) {
+        expect(lead2.x - rear.x).toBeGreaterThanOrEqual(FLYING_VEHICLE_MIN_SEPARATION - 1e-6);
+      }
+    }
   });
 });

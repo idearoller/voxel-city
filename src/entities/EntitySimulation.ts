@@ -4,13 +4,28 @@
  * No Three.js — `EntitySystem` is the only thing that touches a renderer.
  */
 
-import { createFlyingVehicleOnLane, stepFlyingVehicle, type FlyingVehicle } from './FlyingVehicle';
+import {
+  applyFlyingVehicleFollowSpacing,
+  createFlyingVehicleOnLane,
+  FLYING_VEHICLE_MIN_SEPARATION,
+  stepFlyingVehicle,
+  type FlyingVehicle,
+} from './FlyingVehicle';
 import { createPedestrianAt, stepPedestrian, type Pedestrian } from './Pedestrian';
 import { isRoadCell, isSidewalkCell, type NavGrid } from './NavGrid';
-import { isBeyondDespawnRadius, pickElevatedSpawnCell, pickFlyingVehicleSpawn, pickSpawnCell } from './Spawner';
+import {
+  isBeyondDespawnRadius,
+  isSpawnClearOfVehicles,
+  pickElevatedSpawnCell,
+  pickFlyingVehicleSpawn,
+  pickSpawnCell,
+} from './Spawner';
 import type { SkyLane } from './SkyLane';
-import { createVehicleAt, stepVehicle, type Vehicle } from './Vehicle';
+import { applyVehicleFollowSpacing, createVehicleAt, stepVehicle, VEHICLE_MIN_SEPARATION, type Vehicle } from './Vehicle';
 import { createRng, type Rng } from '../gen/rng';
+
+/** How many alternate spawn candidates to try before giving up on a spawn this tick, when the first candidate lands too close to existing traffic (see `isSpawnClearOfVehicles`). */
+const SPAWN_CLEARANCE_ATTEMPTS = 8;
 
 export interface EntitySimulationConfig {
   maxPedestrians: number;
@@ -121,6 +136,13 @@ export class EntitySimulation {
     swapRemoveDead(this.vehicles);
     swapRemoveDead(this.flyingVehicles);
 
+    // Same-lane follow-distance: run after this tick's own movement/despawn
+    // so a vehicle's gap to its leader reflects where everyone actually
+    // ended up, not stale pre-step positions (see `applyVehicleFollowSpacing`
+    // / `applyFlyingVehicleFollowSpacing` for the full behavior).
+    applyVehicleFollowSpacing(this.vehicles, dt);
+    applyFlyingVehicleFollowSpacing(this.flyingVehicles, dt);
+
     this.trySpawnPedestrian(grid, playerX, playerY, playerZ);
     this.trySpawnVehicle(grid, playerX, playerZ);
     this.trySpawnFlyingVehicle(playerX, playerZ);
@@ -165,34 +187,62 @@ export class EntitySimulation {
     this.pedestrians.push(createPedestrianAt(cell.x, cell.z, grid.groundY, speed));
   }
 
+  /**
+   * Retries up to `SPAWN_CLEARANCE_ATTEMPTS` fresh candidate cells, each
+   * checked against `isSpawnClearOfVehicles`, so a new vehicle never pops
+   * into existence already overlapping one that's already there (see that
+   * function's doc comment for why the check is citywide rather than
+   * lane-scoped). A miss on every attempt just skips this tick's spawn —
+   * consistent with `pickSpawnCell` itself already returning `null` on a
+   * miss, rather than forcing a spawn somewhere unsafe.
+   */
   private trySpawnVehicle(grid: NavGrid, playerX: number, playerZ: number): void {
     if (this.vehicles.length >= this.config.maxVehicles) return;
-    const cell = pickSpawnCell(
-      grid,
-      isRoadCell,
-      playerX,
-      playerZ,
-      this.config.spawnMinRadius,
-      this.config.spawnMaxRadius,
-      this.rng,
-    );
-    if (!cell) return;
-    const speed = this.rng.float(this.config.vehicleSpeedRange[0], this.config.vehicleSpeedRange[1]);
-    this.vehicles.push(createVehicleAt(cell.x, cell.z, speed));
+
+    for (let attempt = 0; attempt < SPAWN_CLEARANCE_ATTEMPTS; attempt++) {
+      const cell = pickSpawnCell(
+        grid,
+        isRoadCell,
+        playerX,
+        playerZ,
+        this.config.spawnMinRadius,
+        this.config.spawnMaxRadius,
+        this.rng,
+      );
+      if (!cell) return;
+
+      const x = cell.x + 0.5;
+      const z = cell.z + 0.5;
+      if (!isSpawnClearOfVehicles(x, z, this.vehicles, VEHICLE_MIN_SEPARATION)) continue;
+
+      const speed = this.rng.float(this.config.vehicleSpeedRange[0], this.config.vehicleSpeedRange[1]);
+      this.vehicles.push(createVehicleAt(cell.x, cell.z, speed));
+      return;
+    }
   }
 
+  /** Same clearance-retry approach as `trySpawnVehicle` — see that method's doc comment. */
   private trySpawnFlyingVehicle(playerX: number, playerZ: number): void {
     if (this.flyingVehicles.length >= this.config.maxFlyingVehicles) return;
-    const spawn = pickFlyingVehicleSpawn(
-      this.skyLanes,
-      playerX,
-      playerZ,
-      this.config.spawnMinRadius,
-      this.config.spawnMaxRadius,
-      this.rng,
-    );
-    if (!spawn) return;
-    const speed = this.rng.float(this.config.flyingVehicleSpeedRange[0], this.config.flyingVehicleSpeedRange[1]);
-    this.flyingVehicles.push(createFlyingVehicleOnLane(spawn.lane, spawn.travelCoord, spawn.direction, speed));
+
+    for (let attempt = 0; attempt < SPAWN_CLEARANCE_ATTEMPTS; attempt++) {
+      const spawn = pickFlyingVehicleSpawn(
+        this.skyLanes,
+        playerX,
+        playerZ,
+        this.config.spawnMinRadius,
+        this.config.spawnMaxRadius,
+        this.rng,
+      );
+      if (!spawn) return;
+
+      const x = spawn.lane.axis === 'x' ? spawn.travelCoord : spawn.lane.fixed;
+      const z = spawn.lane.axis === 'z' ? spawn.travelCoord : spawn.lane.fixed;
+      if (!isSpawnClearOfVehicles(x, z, this.flyingVehicles, FLYING_VEHICLE_MIN_SEPARATION)) continue;
+
+      const speed = this.rng.float(this.config.flyingVehicleSpeedRange[0], this.config.flyingVehicleSpeedRange[1]);
+      this.flyingVehicles.push(createFlyingVehicleOnLane(spawn.lane, spawn.travelCoord, spawn.direction, speed));
+      return;
+    }
   }
 }

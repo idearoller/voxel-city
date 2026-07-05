@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { buildNavGrid, isRoadCell, type NavGrid } from '../src/entities/NavGrid';
-import { createVehicleAt, stepVehicle } from '../src/entities/Vehicle';
+import {
+  applyVehicleFollowSpacing,
+  createVehicleAt,
+  stepVehicle,
+  VEHICLE_FOLLOW_DISTANCE,
+  VEHICLE_MIN_SEPARATION,
+  type Vehicle,
+} from '../src/entities/Vehicle';
 import { ASPHALT, CONCRETE } from '../src/world/BlockRegistry';
 import { World } from '../src/world/World';
 
@@ -205,5 +212,125 @@ describe('stepVehicle at a crossing-roads intersection (junction contract)', () 
     if (flowZ !== 0 && vehicle.dirZ !== 0) expect(vehicle.dirZ).toBe(flowZ);
     // The whole point of the snap: it should have moved off z=8 rather than committing to the contradicting (9,8).
     expect(vehicle.cellZ).not.toBe(8);
+  });
+});
+
+/** A same-lane, eastbound pair: `rear` follows `lead` down the +x axis at a shared cellZ. */
+function makePair(gap: number, leadSpeed: number, rearCruiseSpeed: number): { lead: Vehicle; rear: Vehicle } {
+  const lead = createVehicleAt(20, 5, leadSpeed);
+  lead.dirX = 1;
+  lead.x = 20 + gap;
+
+  const rear = createVehicleAt(20, 5, rearCruiseSpeed);
+  rear.dirX = 1;
+  // rear.x already sits at 20.5 from createVehicleAt.
+  return { lead, rear };
+}
+
+describe('applyVehicleFollowSpacing', () => {
+  it('never lets a same-lane follower closer than VEHICLE_MIN_SEPARATION to its leader, clamping position if physics already closed the gap too far', () => {
+    const { lead, rear } = makePair(VEHICLE_MIN_SEPARATION - 1, 8, 8);
+
+    applyVehicleFollowSpacing([lead, rear], 1 / 60);
+
+    expect(lead.x - rear.x).toBeCloseTo(VEHICLE_MIN_SEPARATION, 10);
+  });
+
+  it('slows a follower toward the leader speed once the gap closes inside VEHICLE_FOLLOW_DISTANCE, without exceeding the leader', () => {
+    const midGap = (VEHICLE_MIN_SEPARATION + VEHICLE_FOLLOW_DISTANCE) / 2;
+    const { lead, rear } = makePair(midGap, 4, 10); // leader much slower than the follower's own cruise speed
+
+    applyVehicleFollowSpacing([lead, rear], 1); // 1s tick -- enough headroom for VEHICLE_MAX_ACCEL to reach the target
+
+    expect(rear.speed).toBeLessThan(10); // eased down from its own cruise speed
+    expect(rear.speed).toBeLessThanOrEqual(lead.speed + 1e-9);
+  });
+
+  it('leaves a follower cruising at full speed once the gap clears VEHICLE_FOLLOW_DISTANCE', () => {
+    const { lead, rear } = makePair(VEHICLE_FOLLOW_DISTANCE + 5, 4, 8);
+    rear.speed = 6; // below cruise, to prove it accelerates back up rather than staying capped
+
+    applyVehicleFollowSpacing([lead, rear], 1);
+
+    expect(rear.speed).toBeCloseTo(8, 5);
+  });
+
+  it('does not affect vehicles in a different lane (different cross-axis cell), even if physically nearby', () => {
+    const { lead } = makePair(0, 8, 8);
+    const other = createVehicleAt(20, 6, 8); // adjacent row -- a different lane entirely
+    other.dirX = 1;
+    other.x = lead.x - 0.5; // deliberately overlapping lead's x, but not its lane
+
+    applyVehicleFollowSpacing([lead, other], 1 / 60);
+
+    expect(other.speed).toBe(8); // untouched -- never grouped with `lead`'s lane
+  });
+
+  it('does not affect opposite-direction vehicles on the same road cell column, per this task\'s scope', () => {
+    const eastbound = createVehicleAt(20, 5, 8);
+    eastbound.dirX = 1;
+    const westbound = createVehicleAt(20, 5, 8);
+    westbound.dirX = -1;
+    westbound.x = eastbound.x + 0.1; // right next to each other, opposing headings
+
+    applyVehicleFollowSpacing([eastbound, westbound], 1 / 60);
+
+    expect(eastbound.speed).toBe(8);
+    expect(westbound.speed).toBe(8);
+  });
+
+  it('smooths speed changes rather than teleporting them: a full stop takes several ticks to ease into, not one', () => {
+    const { lead, rear } = makePair(VEHICLE_MIN_SEPARATION, 0, 8);
+    lead.speed = 0; // leader already stopped dead
+
+    applyVehicleFollowSpacing([lead, rear], 1 / 60);
+
+    expect(rear.speed).toBeGreaterThan(0); // eased down, not snapped straight to 0 in a single 1/60s tick
+  });
+
+  it('resolves a whole stopped queue leader-first: a three-car queue never overlaps anywhere down the chain', () => {
+    const back = createVehicleAt(20, 5, 8);
+    back.dirX = 1;
+    back.x = 20.5;
+    const middle = createVehicleAt(20, 5, 8);
+    middle.dirX = 1;
+    middle.x = 20.5 + (VEHICLE_MIN_SEPARATION - 1); // already too close to `back`
+    const front = createVehicleAt(20, 5, 8);
+    front.dirX = 1;
+    front.x = middle.x + (VEHICLE_MIN_SEPARATION - 1); // already too close to `middle`
+    front.speed = 0; // stopped dead at the front of the queue
+
+    applyVehicleFollowSpacing([back, middle, front], 1 / 60);
+
+    expect(front.x - middle.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-9);
+    expect(middle.x - back.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-9);
+  });
+
+  it('soaks a lane of vehicles driving a real road grid: no overlap and no teleport over a long run', () => {
+    const grid = buildEastWestRoadGrid();
+    const vehicles = [
+      createVehicleAt(2, 5, 9),
+      createVehicleAt(6, 5, 6), // slower leader ahead -- forces the follower behind it to yield
+    ];
+    const dt = 1 / 60;
+    const maxPerTickDisplacement = 9 * dt * 1.5; // fastest cruise speed * dt, with slack
+
+    for (let tick = 0; tick < 1200; tick++) {
+      const before = vehicles.map((v) => ({ x: v.x, z: v.z }));
+      for (const v of vehicles) stepVehicle(v, dt, grid);
+      applyVehicleFollowSpacing(vehicles, dt);
+
+      for (let i = 0; i < vehicles.length; i++) {
+        const v = vehicles[i] as Vehicle;
+        const prev = before[i] as { x: number; z: number };
+        const displacement = Math.hypot(v.x - prev.x, v.z - prev.z);
+        expect(displacement).toBeLessThanOrEqual(maxPerTickDisplacement);
+      }
+
+      const [rear, lead] = vehicles as [Vehicle, Vehicle];
+      if (rear.alive && lead.alive && rear.cellZ === lead.cellZ && rear.dirX === lead.dirX && rear.dirX !== 0) {
+        expect(lead.x - rear.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-6);
+      }
+    }
   });
 });

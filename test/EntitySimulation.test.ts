@@ -273,3 +273,57 @@ describe('EntitySimulation flying vehicles', () => {
     }
   });
 });
+
+describe('EntitySimulation vehicle spawn clearance', () => {
+  it('never spawns a ground vehicle overlapping an already-existing one, even at a packed vehicle cap', () => {
+    // A tiny arena with a tight vehicle cap: forces repeated spawns into a
+    // small area, exactly the scenario where "spawn on top of an existing
+    // vehicle" would show up if the clearance retry weren't wired in.
+    const config: EntitySimulationConfig = { ...TEST_CONFIG, maxVehicles: 8, spawnMinRadius: 0, spawnMaxRadius: 15 };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(30, 30), 'sim-vehicle-clearance');
+
+    for (let i = 0; i < 500; i++) {
+      sim.update(1 / 60, 15, 1, 15);
+
+      const vehicles = sim.vehicleList;
+      for (let a = 0; a < vehicles.length; a++) {
+        for (let b = a + 1; b < vehicles.length; b++) {
+          const va = vehicles[a] as (typeof vehicles)[number];
+          const vb = vehicles[b] as (typeof vehicles)[number];
+          // Same-lane pairs are governed by VEHICLE_MIN_SEPARATION (checked
+          // in Vehicle.test.ts); this test's job is the spawn-time
+          // guarantee, so it only needs to rule out true (0-distance)
+          // overlap between any two vehicles, lane membership aside.
+          const dist = Math.hypot(va.x - vb.x, va.z - vb.z);
+          expect(dist).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it('never spawns a flying vehicle overlapping an already-existing one, even at a packed vehicle cap', () => {
+    const config: EntitySimulationConfig = {
+      ...TEST_CONFIG,
+      maxFlyingVehicles: 8,
+      spawnMinRadius: 0,
+      spawnMaxRadius: 15,
+    };
+    const sim = new EntitySimulation(config);
+    sim.reset(makeOpenGrid(30, 30), 'sim-flying-clearance', [makeStraightLane({ start: 0, end: 30 })]);
+
+    for (let i = 0; i < 500; i++) {
+      sim.update(1 / 60, 15, 1, 15);
+
+      const flyers = sim.flyingVehicleList;
+      for (let a = 0; a < flyers.length; a++) {
+        for (let b = a + 1; b < flyers.length; b++) {
+          const fa = flyers[a] as (typeof flyers)[number];
+          const fb = flyers[b] as (typeof flyers)[number];
+          const dist = Math.hypot(fa.x - fb.x, fa.z - fb.z);
+          expect(dist).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+});

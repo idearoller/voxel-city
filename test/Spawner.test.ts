@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isSidewalkCell, type ElevatedLevel, type NavGrid } from '../src/entities/NavGrid';
 import {
   isBeyondDespawnRadius,
+  isSpawnClearOfVehicles,
   pickElevatedSpawnCell,
   pickFlyingVehicleSpawn,
   pickSpawnCell,
@@ -274,6 +275,32 @@ describe('pickFlyingVehicleSpawn', () => {
       expect(result.travelCoord).toBeGreaterThanOrEqual(20);
       expect(result.travelCoord).toBeLessThan(60);
     }
+  });
+});
+
+describe('isSpawnClearOfVehicles', () => {
+  it('is true when no existing vehicle is within minGap', () => {
+    const occupied = [{ x: 0, z: 0 }, { x: 50, z: 50 }];
+    expect(isSpawnClearOfVehicles(10, 10, occupied, 4)).toBe(true);
+  });
+
+  it('is false when an existing vehicle is closer than minGap', () => {
+    const occupied = [{ x: 10, z: 10 }];
+    expect(isSpawnClearOfVehicles(11, 10, occupied, 4)).toBe(false);
+  });
+
+  it('is true at exactly minGap distance (boundary is exclusive of rejection)', () => {
+    const occupied = [{ x: 0, z: 0 }];
+    expect(isSpawnClearOfVehicles(4, 0, occupied, 4)).toBe(true);
+  });
+
+  it('is true when the occupied list is empty', () => {
+    expect(isSpawnClearOfVehicles(0, 0, [], 10)).toBe(true);
+  });
+
+  it('checks every occupant, not just the first', () => {
+    const occupied = [{ x: 100, z: 100 }, { x: 0.5, z: 0 }, { x: 200, z: 200 }];
+    expect(isSpawnClearOfVehicles(0, 0, occupied, 1)).toBe(false);
   });
 });
 
