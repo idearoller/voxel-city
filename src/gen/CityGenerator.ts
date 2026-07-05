@@ -21,7 +21,8 @@ import {
   stairShaftFootprintColumns,
   towerKey,
   writeBillboard,
-  writeBridge,
+  writeBridgeDeckAndRails,
+  writeBridgeWalkway,
   writeElevatorShaft,
   writeSkyLobby,
   writeStairShaft,
@@ -118,7 +119,17 @@ function placeVerticalInfrastructure(
   bridges: readonly Bridge[],
   rng: Rng,
 ): { stairShafts: StairShaft[]; walkways: Walkway[] } {
-  for (const bridge of bridges) writeBridge(world, bridge);
+  // Deck+rails for every bridge first, then every bridge's walkway clear
+  // (middle lane + both doors) — never interleaved per bridge. Two bridges
+  // can meet the same tower corner at the same level with overlapping
+  // footprints (one bridge's rail band crossing the other's own middle lane
+  // or door), so clearing every walkway only after every rail is written
+  // guarantees the walkway clear is always the last write to touch its own
+  // cells, regardless of which bridge comes first in `bridges`. See
+  // `writeBridgeWalkway`'s doc comment in infrastructure.ts for the full
+  // mechanism this ordering fixes.
+  for (const bridge of bridges) writeBridgeDeckAndRails(world, bridge);
+  for (const bridge of bridges) writeBridgeWalkway(world, bridge);
 
   const stairShafts = planStairShafts(bridges);
   for (const shaft of stairShafts) writeStairShaft(world, shaft);

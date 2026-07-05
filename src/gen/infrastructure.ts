@@ -329,13 +329,13 @@ export function planBridges(buildings: readonly BuildingPlan[], rng: Rng): Bridg
 }
 
 /**
- * Writes a bridge: a solid METAL deck across the full 3-wide band, 2-high
- * NEON rails along the two edge rows (leaving the 1-wide middle lane walkable
- * with 2 voxels of headroom), and a door opening punched into each tower's
- * facing wall at the middle lane so the deck reads as reachable, not just
- * decorative.
+ * Writes a bridge's solid METAL deck across the full 3-wide band and the
+ * 2-high NEON rails along its two edge rows — but NOT the walkway clearing
+ * (middle lane + both door openings); see `writeBridgeWalkway` for that, and
+ * this pair's own doc comment for why they're split out rather than one
+ * function like before.
  */
-export function writeBridge(world: World, bridge: Bridge): void {
+export function writeBridgeDeckAndRails(world: World, bridge: Bridge): void {
   const { axis, level, x, z, width, depth } = bridge;
 
   for (let dx = 0; dx < width; dx++) {
@@ -351,11 +351,6 @@ export function writeBridge(world: World, bridge: Bridge): void {
         world.setBlockRaw(x + dx, level + 2, railZ, NEON_CYAN);
       }
     }
-    const midZ = z + 1;
-    for (let dy = 1; dy <= 2; dy++) {
-      world.setBlockRaw(x - 1, level + dy, midZ, AIR);
-      world.setBlockRaw(x + width, level + dy, midZ, AIR);
-    }
   } else {
     for (let dz = 0; dz < depth; dz++) {
       for (const railX of [x, x + width - 1]) {
@@ -363,12 +358,83 @@ export function writeBridge(world: World, bridge: Bridge): void {
         world.setBlockRaw(railX, level + 2, z + dz, NEON_CYAN);
       }
     }
+  }
+}
+
+/**
+ * Clears (to AIR, at `level + 1`/`level + 2`) the bridge's entire walkable
+ * run: its own 1-wide middle lane for the deck's full length, plus the two
+ * door cells one step beyond each end where the lane meets its towers' walls.
+ * All one contiguous run along the bridge's own axis, from one door cell to
+ * the other, which is why this is a single loop rather than "clear the middle
+ * lane" and "carve the doors" as two separate steps like before.
+ *
+ * Split out from the deck/rail write (`writeBridgeDeckAndRails`) so a caller
+ * writing a whole city's worth of bridges can run every bridge's deck+rails
+ * pass *before* any bridge's walkway-clear pass (see
+ * `placeVerticalInfrastructure` in `CityGenerator.ts`). That ordering is
+ * load-bearing, not stylistic: two bridges meeting the same tower corner at
+ * the same `SKY_LEVELS` level can have overlapping footprints, and it is NOT
+ * only the two door cells at risk — a perpendicular bridge's 3-wide rail band
+ * can cross directly over the *interior* of another bridge's own middle lane,
+ * anywhere along its length, not just at the doors (observed on real
+ * generator output, seed `sam-audit-3`, y=30: a first attempt at this fix that
+ * only reordered the door carve left the interior lane cell one step past the
+ * door still sealed by a crossing bridge's rail — the middle lane had never
+ * been anything other than "whatever nobody else happened to write there",
+ * which a crossing bridge's rail write is a perfectly good counterexample to).
+ * With a single `writeBridge` pass per bridge in array order, whichever
+ * bridge wrote its rails *after* the other's walkway existed would silently
+ * reseal part of it — a stranded sky lobby with every voxel individually
+ * well-formed, same symptom as the elevator-vs-bridge-door class
+ * (`canElevatorAndBridgeDoorCoexist`) but a different mechanism entirely
+ * (bridge-vs-bridge, not elevator-vs-bridge), and order-dependent rather than
+ * geometry-dependent — the same two bridges could seal or not seal each
+ * other's walkway purely based on which happened to iterate first.
+ *
+ * Doing every deck+rail write first, then every walkway clear, makes a
+ * walkway clear always the last write to touch its own cells regardless of
+ * bridge iteration order: no rail written by any bridge, including ones that
+ * appear later in the array, can still be standing there afterward. This only
+ * ever touches `level + 1`/`level + 2` (never `level` itself, the solid
+ * deck/floor row), so it can never punch a hole in another bridge's walkable
+ * deck *surface* — at worst it removes a purely decorative rail segment where
+ * two bridges cross, which reads as a doorway through that rail rather than a
+ * rail gap error.
+ */
+export function writeBridgeWalkway(world: World, bridge: Bridge): void {
+  const { axis, level, x, z, width, depth } = bridge;
+
+  if (axis === 'x') {
+    const midZ = z + 1;
+    for (let dx = -1; dx <= width; dx++) {
+      for (let dy = 1; dy <= 2; dy++) {
+        world.setBlockRaw(x + dx, level + dy, midZ, AIR);
+      }
+    }
+  } else {
     const midX = x + 1;
-    for (let dy = 1; dy <= 2; dy++) {
-      world.setBlockRaw(midX, level + dy, z - 1, AIR);
-      world.setBlockRaw(midX, level + dy, z + depth, AIR);
+    for (let dz = -1; dz <= depth; dz++) {
+      for (let dy = 1; dy <= 2; dy++) {
+        world.setBlockRaw(midX, level + dy, z + dz, AIR);
+      }
     }
   }
+}
+
+/**
+ * Writes one bridge fully in isolation: deck, rails, middle lane, and both
+ * door openings. Callers writing a *whole set* of bridges into the same world
+ * (chiefly `CityGenerator.ts`) must NOT use this — they need every bridge's
+ * deck+rail pass to run before any bridge's walkway-clear pass, which this
+ * single-bridge convenience can't provide; see `writeBridgeWalkway`'s doc
+ * comment for exactly why that ordering matters. This exists for callers that
+ * only ever write one bridge into a world (tests, chiefly) where no other
+ * bridge can contend for the same cells.
+ */
+export function writeBridge(world: World, bridge: Bridge): void {
+  writeBridgeDeckAndRails(world, bridge);
+  writeBridgeWalkway(world, bridge);
 }
 
 // ---------------------------------------------------------------------------

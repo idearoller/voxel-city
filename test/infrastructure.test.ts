@@ -16,6 +16,8 @@ import {
   towerKey,
   writeBillboard,
   writeBridge,
+  writeBridgeDeckAndRails,
+  writeBridgeWalkway,
   writeElevatorShaft,
   writeSkyLobby,
   writeStairShaft,
@@ -213,6 +215,88 @@ describe('writeBridge', () => {
     expect(world.getBlock(b.x - 1, b.level + 2, midZ)).toBe(AIR);
     expect(world.getBlock(b.x + b.width, b.level + 1, midZ)).toBe(AIR);
     expect(world.getBlock(b.x + b.width, b.level + 2, midZ)).toBe(AIR);
+  });
+});
+
+describe('crossing bridges at a shared tower corner (deck+rails-before-walkway ordering)', () => {
+  // Reproduces, in miniature, the exact geometry found on real generator
+  // output (seed `sam-audit-3`, y=30, tower @ (160, 247)): an x-axis bridge's
+  // 3-wide rail band passes directly over a z-axis bridge's own middle lane,
+  // one cell past the z-axis bridge's door threshold. The two bridges don't
+  // even need real towers on every side for this — the write-order collision
+  // is between the two `Bridge` structs alone, so hand-built bridges with a
+  // shared corner tower are enough to isolate it.
+  const sharedTower = tower({ x: 160, z: 247, width: 27, depth: 14, height: 80 });
+  const westTower = tower({ x: 134, z: 247, width: 10, depth: 10, height: 80 });
+  const southTower = tower({ x: 160, z: 280, width: 10, depth: 10, height: 80 });
+
+  // x-axis bridge running east-west, whose 3-wide deck (z = 261..263) passes
+  // just past the z-axis bridge's door.
+  const xBridge: Bridge = {
+    axis: 'x',
+    level: 30,
+    x: 148,
+    z: 261,
+    width: 32, // long enough to still be crossing at x=173 (zBridge's midX) despite starting well west of it
+    depth: 3,
+    towerA: westTower,
+    towerB: sharedTower,
+  };
+
+  // z-axis bridge running north-south out of the same shared tower corner:
+  // its door lands at z = 260 (sharedTower's own wall), and its own first
+  // interior middle-lane cell at z = 261 sits exactly on xBridge's z=261 rail
+  // row.
+  const zBridge: Bridge = {
+    axis: 'z',
+    level: 30,
+    x: 172,
+    z: 261,
+    width: 3,
+    depth: 19,
+    towerA: sharedTower,
+    towerB: southTower,
+  };
+
+  function assertZBridgeWalkwayOpen(world: World): void {
+    const midX = zBridge.x + 1;
+    // Door threshold into sharedTower's wall, plus the interior lane cell
+    // immediately past it that a rider steps onto next -- both must stay
+    // clear regardless of xBridge's rail crossing directly over the second
+    // one.
+    for (const z of [zBridge.z - 1, zBridge.z]) {
+      expect(world.getBlock(midX, zBridge.level + 1, z)).toBe(AIR);
+      expect(world.getBlock(midX, zBridge.level + 2, z)).toBe(AIR);
+    }
+  }
+
+  it('keeps the z-axis bridge walkway open when every deck+rail is written before any walkway clear, regardless of bridge array order', () => {
+    for (const order of [
+      [xBridge, zBridge],
+      [zBridge, xBridge],
+    ]) {
+      const world = new World();
+      for (const b of order) writeBridgeDeckAndRails(world, b);
+      for (const b of order) writeBridgeWalkway(world, b);
+      assertZBridgeWalkwayOpen(world);
+    }
+  });
+
+  // Revert probe: the single-shot per-bridge `writeBridge` (deck+rails+
+  // walkway all in one call) is exactly the pre-fix write shape. Looping it
+  // per bridge in the order where xBridge's rails land *after* zBridge's
+  // walkway was already cleared reproduces the original defect -- this test
+  // fails if `placeVerticalInfrastructure` (CityGenerator.ts) ever goes back
+  // to that single interleaved pass instead of the current
+  // deck+rails-for-everyone-then-walkway-for-everyone ordering.
+  it('(regression demonstration) an interleaved per-bridge write in the vulnerable order reseals the walkway -- proving the split-pass ordering is load-bearing', () => {
+    const world = new World();
+    writeBridge(world, zBridge);
+    writeBridge(world, xBridge); // xBridge's rails land after zBridge's walkway was cleared
+    const midX = zBridge.x + 1;
+    // The interior lane cell one step past the door is resealed by xBridge's
+    // rail -- this is the defect this suite's fix eliminates.
+    expect(world.getBlock(midX, zBridge.level + 1, zBridge.z)).toBe(NEON_CYAN);
   });
 });
 

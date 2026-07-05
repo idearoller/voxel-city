@@ -227,23 +227,46 @@ describe('buildNavGrid tower-stair links (real generator output)', () => {
     }
 
     expect(totalLobbyComponents).toBeGreaterThan(0);
-    // The dominant ~1-per-seed residual class was root-caused and eliminated:
-    // an elevator shaft's fixed NW-corner footprint could sit directly on a
-    // bridge door's own approach corridor (the door is always carved into
-    // `bridge.towerB`'s north or west wall, the two walls nearest that fixed
-    // corner), silently walling the lobby off from its own bridge with every
-    // individual voxel well-formed. Fixed by `canElevatorAndBridgeDoorCoexist`
-    // (infrastructure.ts), a coexistence gate on `planElevatorShafts` parallel
-    // to the existing `canElevatorAndStairShaftCoexist` one, but versus the
-    // door's transverse offset rather than the centered stair shaft --
-    // verified across 106+30 seeds with bridge counts unchanged seed-for-seed
-    // and only the specific blocking elevators dropped. The threshold stays
-    // >= 0.95 rather than exact 1.0 because a rarer, DISTINCT class remains:
-    // two bridges meeting a tower at the same level can cross such that one
-    // bridge's neon rail rows seal the other's door lane (seen once in a
-    // 30-seed review sweep, `sam-audit-3` y=30) -- a planBridges deconfliction
-    // problem, tracked separately from the elevator gate.
-    expect(reachedBridge / totalLobbyComponents).toBeGreaterThanOrEqual(0.95);
+    // Two residual classes have now been root-caused and eliminated:
+    //
+    // 1. An elevator shaft's fixed NW-corner footprint could sit directly on
+    //    a bridge door's own approach corridor (the door is always carved
+    //    into `bridge.towerB`'s north or west wall, the two walls nearest
+    //    that fixed corner), silently walling the lobby off from its own
+    //    bridge with every individual voxel well-formed. Fixed by
+    //    `canElevatorAndBridgeDoorCoexist` (infrastructure.ts), a
+    //    coexistence gate on `planElevatorShafts` parallel to the existing
+    //    `canElevatorAndStairShaftCoexist` one, but versus the door's
+    //    transverse offset rather than the centered stair shaft — verified
+    //    across 106+30 seeds with bridge counts unchanged seed-for-seed and
+    //    only the specific blocking elevators dropped.
+    //
+    // 2. Two bridges meeting the same tower corner at the same
+    //    `SKY_LEVELS` level could have overlapping footprints: a
+    //    perpendicular bridge's 3-wide rail band crossing directly over
+    //    another bridge's own walkway (its middle lane and/or the door cell
+    //    at either end) — seen on real generator output, seed
+    //    `sam-audit-3`, y=30, tower @ (160, 247). This was a write-order
+    //    defect, not a planning one: `placeVerticalInfrastructure`
+    //    (CityGenerator.ts) used to write each bridge's deck+rails+walkway
+    //    in one interleaved pass per bridge, so whichever bridge's rails
+    //    were written *after* the other's walkway existed would silently
+    //    reseal part of it. Fixed by splitting the write into two citywide
+    //    passes — `writeBridgeDeckAndRails` for every bridge, then
+    //    `writeBridgeWalkway` for every bridge — so a walkway clear is
+    //    always the last write to touch its own cells regardless of bridge
+    //    iteration order (see `writeBridgeWalkway`'s doc comment in
+    //    infrastructure.ts for the full mechanism, and
+    //    `test/infrastructure.test.ts`'s "crossing bridges at a shared tower
+    //    corner" suite for a synthetic, order-independence proof plus a
+    //    revert probe). Verified against a 120-seed `sam-audit-0..119`
+    //    sweep (712/712 lobby components reaching their bridge, 0
+    //    failures) with bridge counts unaffected (`planBridges` itself
+    //    wasn't touched).
+    //
+    // With both classes gone, the threshold tightens from >= 0.95 to the
+    // exact 1.0 the 120-seed sweep actually measured.
+    expect(reachedBridge / totalLobbyComponents).toBe(1);
   });
 });
 
