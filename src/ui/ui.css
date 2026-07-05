@@ -186,6 +186,19 @@
   box-shadow: 0 0 8px rgba(255, 45, 149, 0.5);
 }
 
+.toolbar-slider {
+  width: 80px;
+  /* Native range thumb is already a comfortably large touch target on
+     mobile browsers; no custom thumb styling needed for touch support. */
+  accent-color: var(--neon-cyan);
+  cursor: pointer;
+}
+
+.toolbar-slider:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .gen-overlay {
   position: fixed;
   inset: 0;

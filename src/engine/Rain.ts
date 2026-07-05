@@ -42,6 +42,22 @@ const RAIN_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Maps a continuous `intensity` in [0, 1] to an integer vertex count for
+ * `BufferGeometry.setDrawRange` (2 vertices per streak, head+tail). This is
+ * the cheapest correct lever for a visible rain *amount*: swapping an
+ * integer draw range costs nothing per frame and needs no buffer rebuild,
+ * unlike varying `STREAK_COUNT` itself which would require re-baking the
+ * whole geometry. Exported for unit testing without a `THREE.Scene`.
+ */
+export function rainDrawVertexCount(intensity: number, streakCount: number = STREAK_COUNT): number {
+  return Math.round(clamp01(intensity) * streakCount) * 2;
+}
+
 function buildGeometry(): THREE.BufferGeometry {
   const positions = new Float32Array(STREAK_COUNT * 2 * 3);
   const lengthOffsets = new Float32Array(STREAK_COUNT * 2);
@@ -90,9 +106,11 @@ export class Rain {
   private readonly cameraPosUniform: { value: THREE.Vector3 };
   private readonly opacityUniform: { value: number };
   private enabledFlag = true;
+  private intensityFlag = 1;
 
   constructor(scene: THREE.Scene) {
     const geometry = buildGeometry();
+    geometry.setDrawRange(0, rainDrawVertexCount(this.intensityFlag));
     this.timeUniform = { value: 0 };
     this.cameraPosUniform = { value: new THREE.Vector3() };
     this.opacityUniform = { value: BASE_OPACITY };
@@ -129,6 +147,17 @@ export class Rain {
 
   toggle(): void {
     this.setEnabled(!this.enabledFlag);
+  }
+
+  /** Current rain amount in [0, 1]; independent of `enabled` (the on/off master switch — see `main.ts`'s toolbar wiring). */
+  get intensity(): number {
+    return this.intensityFlag;
+  }
+
+  /** Clamps `intensity` to [0, 1] and swaps the draw range to the matching streak count. No per-frame cost: this only runs on user input, not every tick. */
+  setIntensity(intensity: number): void {
+    this.intensityFlag = clamp01(intensity);
+    this.lineSegments.geometry.setDrawRange(0, rainDrawVertexCount(this.intensityFlag));
   }
 
   /** `nightFactor` in [0, 1] fades rain streaks down (never fully invisible) as day approaches, matching the atmosphere's mood shift. */

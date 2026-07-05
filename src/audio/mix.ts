@@ -24,7 +24,7 @@ const SANDBOX_MIX_ATTENUATION = 0.6;
 export interface AmbientState {
   /** Cyclic fraction in [0, 1) — same convention as `Atmosphere.currentTimeOfDay`. */
   timeOfDay: number;
-  /** [0, 1]; today the game only has rain on/off (see `Rain.enabled`), so callers pass 0 or 1, but a future continuous intensity slider needs no change here. */
+  /** [0, 1] continuous rain amount — `Rain.enabled` gates this to 0 when rain is toggled off; otherwise it's the toolbar's intensity slider value (see `Rain.intensity`). */
   rainIntensity: number;
   isPlayMode: boolean;
 }

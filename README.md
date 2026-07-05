@@ -53,7 +53,8 @@ anywhere to build.
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
-**☔ RAIN** to toggle rain, **🔊 SOUND** to mute/unmute ambient audio (rain,
+**☔ RAIN** to toggle rain (the slider next to it dials how heavy the rain
+falls, and is remembered between sessions), **🔊 SOUND** to mute/unmute ambient audio (rain,
 neon hum, distant traffic — all synthesized via WebAudio, no audio files),
 **⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
 

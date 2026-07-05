@@ -75,6 +75,20 @@ describe('computeAmbientMix', () => {
     );
   });
 
+  it('rain gain scales linearly with intensity, with no cliff around the slider midpoint', () => {
+    const at = (rainIntensity: number) =>
+      computeAmbientMix({ timeOfDay: midnight, rainIntensity, isPlayMode: true }).rainGain;
+
+    const samples = [0, 0.25, 0.5, 0.75, 1].map(at);
+    for (let i = 1; i < samples.length; i++) {
+      const step = (samples[i] as number) - (samples[i - 1] as number);
+      // Each quarter-step should contribute roughly the same amount of gain
+      // (linear in `rainIntensity`) — a "cliff" would show up as one step
+      // wildly larger or smaller than its neighbors.
+      expect(step).toBeCloseTo((samples[4] as number) / 4, 5);
+    }
+  });
+
   it('is a pure function: identical input produces identical output', () => {
     const state = { timeOfDay: 0.37, rainIntensity: 0.6, isPlayMode: true };
     expect(computeAmbientMix(state)).toEqual(computeAmbientMix({ ...state }));

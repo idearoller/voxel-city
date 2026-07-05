@@ -12,17 +12,20 @@ export type GenerateRequestListener = (seed: string) => void;
 export type ToggleListener = () => void;
 export type ExportRequestListener = () => void;
 export type ImportRequestListener = (file: File) => void;
+export type RainIntensityListener = (intensity: number) => void;
 
 export class Toolbar {
   private readonly root: HTMLElement;
   private readonly seedInput: HTMLInputElement;
   private readonly pauseButton: HTMLButtonElement;
   private readonly rainButton: HTMLButtonElement;
+  private readonly rainIntensitySlider: HTMLInputElement;
   private readonly muteButton: HTMLButtonElement;
   private readonly importFileInput: HTMLInputElement;
   private readonly listeners: GenerateRequestListener[] = [];
   private readonly pauseListeners: ToggleListener[] = [];
   private readonly rainListeners: ToggleListener[] = [];
+  private readonly rainIntensityListeners: RainIntensityListener[] = [];
   private readonly muteListeners: ToggleListener[] = [];
   private readonly exportListeners: ExportRequestListener[] = [];
   private readonly importListeners: ImportRequestListener[] = [];
@@ -82,6 +85,26 @@ export class Toolbar {
     });
     this.root.appendChild(this.rainButton);
 
+    // Master/modifier split: the button above is the on/off switch (quick,
+    // discoverable, matches every other toolbar toggle); this slider only
+    // dials the *amount* of rain while it's on. A native `input[type=range]`
+    // needs no extra wiring for touch (see `TouchControlsUI`'s buttons,
+    // which are the DOM-button half of touch input) — it's already a
+    // pointer-driven control in every mobile browser.
+    this.rainIntensitySlider = document.createElement('input');
+    this.rainIntensitySlider.type = 'range';
+    this.rainIntensitySlider.className = 'toolbar-slider';
+    this.rainIntensitySlider.min = '0';
+    this.rainIntensitySlider.max = '1';
+    this.rainIntensitySlider.step = '0.05';
+    this.rainIntensitySlider.setAttribute('aria-label', 'Rain intensity');
+    this.rainIntensitySlider.title = 'Rain intensity';
+    this.rainIntensitySlider.addEventListener('input', () => {
+      const intensity = Number(this.rainIntensitySlider.value);
+      for (const listener of this.rainIntensityListeners) listener(intensity);
+    });
+    this.root.appendChild(this.rainIntensitySlider);
+
     this.muteButton = document.createElement('button');
     this.muteButton.type = 'button';
     this.muteButton.className = 'toolbar-button';
@@ -137,6 +160,10 @@ export class Toolbar {
     this.rainListeners.push(listener);
   }
 
+  onRainIntensityChange(listener: RainIntensityListener): void {
+    this.rainIntensityListeners.push(listener);
+  }
+
   onToggleMute(listener: ToggleListener): void {
     this.muteListeners.push(listener);
   }
@@ -156,9 +183,15 @@ export class Toolbar {
     this.pauseButton.classList.toggle('toolbar-button-active', paused);
   }
 
-  /** Reflects current rain-enabled state onto the toggle button. */
+  /** Reflects current rain-enabled state onto the toggle button and gates the intensity slider (it only affects anything while rain is on). */
   setRainEnabled(enabled: boolean): void {
     this.rainButton.classList.toggle('toolbar-button-active', !enabled);
+    this.rainIntensitySlider.disabled = !enabled;
+  }
+
+  /** Reflects the current rain intensity onto the slider — used on startup to restore the persisted value. */
+  setRainIntensity(intensity: number): void {
+    this.rainIntensitySlider.value = String(intensity);
   }
 
   /** Reflects current audio-muted state onto the toggle button. */

@@ -13,6 +13,7 @@ import { EnvironmentProbe } from './engine/EnvironmentProbe';
 import { updateNeon, roadMaterial } from './engine/Materials';
 import { PostFX } from './engine/PostFX';
 import { Rain } from './engine/Rain';
+import { RainIntensityPreference } from './engine/RainIntensityPreference';
 import { ModeManager } from './player/ModeManager';
 import { LookControls } from './player/LookControls';
 import { aabbFromFeet, voxelIntersectsAabb } from './player/PlayerCollision';
@@ -79,6 +80,12 @@ function readLocalStorage() {
 }
 
 const audioSystem = new AudioSystem(createAudioContext, readLocalStorage());
+
+// Rain intensity is a device/session preference (like mute), not city data —
+// it isn't part of `.vxc` metadata (see `io/Serializer.ts`'s `WorldMeta`),
+// same as rain enabled/disabled today.
+const rainIntensityPreference = new RainIntensityPreference(readLocalStorage());
+rain.setIntensity(rainIntensityPreference.intensity);
 
 function unlockAudio(): void {
   audioSystem.unlock();
@@ -435,6 +442,11 @@ toolbar.onToggleRain(() => {
   rain.toggle();
   toolbar.setRainEnabled(rain.enabled);
 });
+toolbar.setRainIntensity(rainIntensityPreference.intensity);
+toolbar.onRainIntensityChange((intensity) => {
+  rain.setIntensity(intensity);
+  rainIntensityPreference.set(intensity);
+});
 toolbar.onToggleMute(() => toggleMute());
 toolbar.setMuted(audioSystem.isMuted);
 touchControlsUI.setMuted(audioSystem.isMuted);
@@ -460,7 +472,7 @@ engine.start({
     entitySystem.update(dt, engine.camera.position.x, engine.camera.position.y, engine.camera.position.z);
     audioSystem.update({
       timeOfDay: atmosphere.currentTimeOfDay,
-      rainIntensity: rain.enabled ? 1 : 0,
+      rainIntensity: rain.enabled ? rain.intensity : 0,
       isPlayMode: modeManager.currentMode === 'play',
     });
   },
