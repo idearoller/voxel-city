@@ -45,7 +45,7 @@ describe('EntitySystem', () => {
     for (let i = 0; i < 30; i++) {
       system.update(1 / 60, 15, GROUND_Y, 15);
     }
-    system.render();
+    system.render(1); // alpha=1: render fully at current state -- these tests assert instance counts, not interpolated positions.
 
     expect(scene.children.every((child) => !(child instanceof THREE.InstancedMesh) || child.count === 0)).toBe(true);
   });
@@ -70,7 +70,7 @@ describe('EntitySystem', () => {
     for (let i = 0; i < 60; i++) {
       system.update(1 / 60, 20, GROUND_Y, 20);
     }
-    system.render();
+    system.render(1); // alpha=1: render fully at current state -- these tests assert instance counts, not interpolated positions.
 
     const pedestrianBody = scene.children.find(
       (child) => child instanceof THREE.InstancedMesh && child.count > 0,
@@ -101,7 +101,7 @@ describe('EntitySystem', () => {
     const emptyWorld = new World();
     system.rebuild(emptyWorld, GROUND_Y, 'system-reset-b');
     system.update(1 / 60, 20, GROUND_Y, 20);
-    system.render();
+    system.render(1); // alpha=1: render fully at current state -- these tests assert instance counts, not interpolated positions.
 
     const anyVisibleInstances = scene.children.some(
       (child) => child instanceof THREE.InstancedMesh && child.count > 0,
@@ -131,7 +131,7 @@ describe('EntitySystem', () => {
     for (let i = 0; i < 600; i++) {
       system.update(1 / 60, playerX, GROUND_Y, playerZ);
     }
-    system.render();
+    system.render(1); // alpha=1: render fully at current state -- these tests assert instance counts, not interpolated positions.
 
     const flyingVehicleBody = scene.children.find(
       (child) => child instanceof THREE.InstancedMesh && child.count > 0,
@@ -163,7 +163,7 @@ describe('EntitySystem', () => {
     const emptyWorld = new World();
     system.rebuild(emptyWorld, GROUND_Y, 'system-flying-after');
     for (let i = 0; i < 60; i++) system.update(1 / 60, playerX, GROUND_Y, playerZ);
-    system.render();
+    system.render(1); // alpha=1: render fully at current state -- these tests assert instance counts, not interpolated positions.
 
     const flyingVehicleBody = scene.children.find(
       (child) => child instanceof THREE.InstancedMesh && child.count > 0,

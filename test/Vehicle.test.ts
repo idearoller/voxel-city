@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { buildNavGrid, isRoadCell, type NavGrid } from '../src/entities/NavGrid';
 import {
   applyVehicleFollowSpacing,
+  captureRenderPrevState,
   createVehicleAt,
+  snapRenderPrevIfTeleported,
   stepVehicle,
   VEHICLE_FOLLOW_DISTANCE,
   VEHICLE_MIN_SEPARATION,
@@ -442,5 +444,57 @@ describe('applyVehicleFollowSpacing', () => {
         expect(lead.x - rear.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-6);
       }
     }
+  });
+});
+
+describe('render-interpolation state (prevX/prevZ/prevDirX/prevDirZ)', () => {
+  it('createVehicleAt seeds prev equal to the initial position/heading, so a fresh spawn never smears in', () => {
+    const vehicle = createVehicleAt(3, 7, 8);
+    expect(vehicle.prevX).toBe(vehicle.x);
+    expect(vehicle.prevZ).toBe(vehicle.z);
+    expect(vehicle.prevDirX).toBe(vehicle.dirX);
+    expect(vehicle.prevDirZ).toBe(vehicle.dirZ);
+  });
+
+  it('captureRenderPrevState snapshots the current position/heading, and a subsequent step leaves it holding the pre-step values', () => {
+    const grid = buildEastWestRoadGrid();
+    const vehicle = createVehicleAt(2, 5, 8);
+    // Give it a real heading first so dirX/dirZ aren't both still 0.
+    stepVehicle(vehicle, 1 / 60, grid);
+
+    const xBefore = vehicle.x;
+    const zBefore = vehicle.z;
+    const dirXBefore = vehicle.dirX;
+    const dirZBefore = vehicle.dirZ;
+
+    captureRenderPrevState(vehicle);
+    stepVehicle(vehicle, 1 / 60, grid);
+
+    expect(vehicle.x).not.toBe(xBefore); // sanity: the step actually moved it
+    expect(vehicle.prevX).toBe(xBefore);
+    expect(vehicle.prevZ).toBe(zBefore);
+    expect(vehicle.prevDirX).toBe(dirXBefore);
+    expect(vehicle.prevDirZ).toBe(dirZBefore);
+  });
+
+  it('snapRenderPrevIfTeleported leaves prev untouched after ordinary bounded movement', () => {
+    const vehicle = createVehicleAt(2, 5, 8);
+    captureRenderPrevState(vehicle);
+    vehicle.x += (8 * (1 / 60)) / 2; // well within the speed*dt bound
+
+    snapRenderPrevIfTeleported(vehicle, 1 / 60);
+
+    expect(vehicle.prevX).toBe(2.5); // unchanged from captureRenderPrevState's snapshot
+  });
+
+  it('snapRenderPrevIfTeleported collapses prev to current when a same-tick jump is implausibly large', () => {
+    const vehicle = createVehicleAt(2, 5, 8);
+    captureRenderPrevState(vehicle);
+    vehicle.x += 500; // a teleport far beyond anything stepVehicle/applyVehicleFollowSpacing could produce in one tick
+
+    snapRenderPrevIfTeleported(vehicle, 1 / 60);
+
+    expect(vehicle.prevX).toBe(vehicle.x); // snapped -- no smear across the map next render
+    expect(vehicle.prevZ).toBe(vehicle.z);
   });
 });

@@ -24,6 +24,7 @@
  */
 
 import { isRoadCell, type NavGrid } from './NavGrid';
+import { isTeleportJump } from './interpolation';
 import { approachSpeed, computeFollowOrder, followTargetSpeed, type LaneMember } from './traffic';
 
 export interface Vehicle {
@@ -63,6 +64,20 @@ export interface Vehicle {
    */
   prevLeader?: Vehicle;
   intrusionGap?: number;
+
+  /**
+   * Render-interpolation snapshot: `x`/`z`/`dirX`/`dirZ` as of the end of the
+   * previous fixed sim tick — see `Pedestrian.prevX`'s doc comment for the
+   * full rationale (this mirrors it exactly, minus a `y` axis, since a ground
+   * vehicle's height is derived from `groundY` at render time, not carried on
+   * the entity). `createVehicleAt` seeds these equal to the initial
+   * position/heading so a freshly spawned vehicle's first render never
+   * smears in from nowhere.
+   */
+  prevX: number;
+  prevZ: number;
+  prevDirX: number;
+  prevDirZ: number;
 }
 
 const ARRIVE_EPS = 0.02;
@@ -82,9 +97,11 @@ export const VEHICLE_MAX_ACCEL = 8;
 
 /** Spawns a vehicle already centered on (cellX, cellZ) — its first `step` will immediately pick a real heading from the flow field. */
 export function createVehicleAt(cellX: number, cellZ: number, speed: number): Vehicle {
+  const x = cellX + 0.5;
+  const z = cellZ + 0.5;
   return {
-    x: cellX + 0.5,
-    z: cellZ + 0.5,
+    x,
+    z,
     cellX,
     cellZ,
     dirX: 0,
@@ -92,7 +109,42 @@ export function createVehicleAt(cellX: number, cellZ: number, speed: number): Ve
     speed,
     cruiseSpeed: speed,
     alive: true,
+    prevX: x,
+    prevZ: z,
+    prevDirX: 0,
+    prevDirZ: 0,
   };
+}
+
+/**
+ * Snapshots `vehicle`'s current position/heading into its `prev*` fields —
+ * call once per fixed tick, before `stepVehicle`, so `EntityRenderer` has
+ * "where it was" to lerp from (see `Vehicle.prevX`'s doc comment).
+ */
+export function captureRenderPrevState(vehicle: Vehicle): void {
+  vehicle.prevX = vehicle.x;
+  vehicle.prevZ = vehicle.z;
+  vehicle.prevDirX = vehicle.dirX;
+  vehicle.prevDirZ = vehicle.dirZ;
+}
+
+/**
+ * Collapses `vehicle`'s render-interpolation window to a single point (`prev`
+ * := current) if this tick's total movement -- driving plus whatever
+ * `applyVehicleFollowSpacing` corrected afterward -- was farther than any
+ * legitimate tick could plausibly cover; see `isTeleportJump`. No ground
+ * vehicle can actually travel that far in one tick today (`stepVehicle`
+ * bounds normal movement to `speed * dt`, and the follow-spacing hard clamp
+ * only ever closes a gap down to `VEHICLE_MIN_SEPARATION`, never opens a
+ * larger one), but this is the safety net for a future teleport-ish feature
+ * (or a regression) rather than papering over a known one. Call once per
+ * tick, after `applyVehicleFollowSpacing` has run.
+ */
+export function snapRenderPrevIfTeleported(vehicle: Vehicle, dt: number): void {
+  if (isTeleportJump(vehicle.prevX, 0, vehicle.prevZ, vehicle.x, 0, vehicle.z, vehicle.speed, dt)) {
+    vehicle.prevX = vehicle.x;
+    vehicle.prevZ = vehicle.z;
+  }
 }
 
 function cellFlow(grid: NavGrid, x: number, z: number): { flowX: number; flowZ: number } {

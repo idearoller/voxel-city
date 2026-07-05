@@ -548,7 +548,7 @@ engine.start({
     cameraRightScratch.copy(RIGHT_AXIS).applyQuaternion(engine.camera.quaternion);
     audioSystem.updateFlybys(nearbyFlyerScratch, { x: cameraRightScratch.x, z: cameraRightScratch.z });
   },
-  render: () => {
+  render: (alpha) => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):
     // after a stall the accumulator can replay update() many times in one
     // frame, and running the rebuild budget there would blow past the
@@ -556,7 +556,7 @@ engine.start({
     chunkRenderer.update(engine.camera.position);
     updateNeon(elapsedTime);
     billboardLayer.update(elapsedTime, atmosphere.nightFactor);
-    entitySystem.render();
+    entitySystem.render(alpha);
     elevatorSystem.render();
 
     const inElevator =

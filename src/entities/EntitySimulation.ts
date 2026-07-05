@@ -6,12 +6,20 @@
 
 import {
   applyFlyingVehicleFollowSpacing,
+  captureRenderPrevState as captureFlyingVehiclePrevState,
   createFlyingVehicleOnLane,
   FLYING_VEHICLE_MIN_SEPARATION,
+  snapRenderPrevIfTeleported as snapFlyingVehiclePrevIfTeleported,
   stepFlyingVehicle,
   type FlyingVehicle,
 } from './FlyingVehicle';
-import { createPedestrianAt, stepPedestrian, type Pedestrian } from './Pedestrian';
+import {
+  captureRenderPrevState as capturePedestrianPrevState,
+  createPedestrianAt,
+  snapRenderPrevIfTeleported as snapPedestrianPrevIfTeleported,
+  stepPedestrian,
+  type Pedestrian,
+} from './Pedestrian';
 import { isRoadCell, isSidewalkCell, type NavGrid } from './NavGrid';
 import {
   isBeyondDespawnRadius,
@@ -21,7 +29,15 @@ import {
   pickSpawnCell,
 } from './Spawner';
 import type { SkyLane } from './SkyLane';
-import { applyVehicleFollowSpacing, createVehicleAt, stepVehicle, VEHICLE_MIN_SEPARATION, type Vehicle } from './Vehicle';
+import {
+  applyVehicleFollowSpacing,
+  captureRenderPrevState as captureVehiclePrevState,
+  createVehicleAt,
+  snapRenderPrevIfTeleported as snapVehiclePrevIfTeleported,
+  stepVehicle,
+  VEHICLE_MIN_SEPARATION,
+  type Vehicle,
+} from './Vehicle';
 import { createRng, type Rng } from '../gen/rng';
 
 /** How many alternate spawn candidates to try before giving up on a spawn this tick, when the first candidate lands too close to existing traffic (see `isSpawnClearOfVehicles`). */
@@ -113,6 +129,14 @@ export class EntitySimulation {
     const grid = this.grid;
     if (!grid) return;
 
+    // Snapshot every entity's pre-step position/heading first -- see
+    // `Pedestrian.prevX`'s doc comment. Must run before any stepping so
+    // `EntityRenderer` always has "where it was this tick" to lerp from,
+    // regardless of which entities move this tick.
+    for (const ped of this.pedestrians) capturePedestrianPrevState(ped);
+    for (const vehicle of this.vehicles) captureVehiclePrevState(vehicle);
+    for (const flyer of this.flyingVehicles) captureFlyingVehiclePrevState(flyer);
+
     for (const ped of this.pedestrians) stepPedestrian(ped, dt, grid, this.rng);
     for (const vehicle of this.vehicles) stepVehicle(vehicle, dt, grid);
     for (const flyer of this.flyingVehicles) stepFlyingVehicle(flyer, dt, grid.width, grid.depth);
@@ -142,6 +166,15 @@ export class EntitySimulation {
     // / `applyFlyingVehicleFollowSpacing` for the full behavior).
     applyVehicleFollowSpacing(this.vehicles, dt);
     applyFlyingVehicleFollowSpacing(this.flyingVehicles, dt);
+
+    // Safety net against smearing a render frame across a same-tick
+    // teleport-sized jump (see `snapRenderPrevIfTeleported`'s doc comment on
+    // each entity module) -- runs last, after every position-mutating pass
+    // this tick (stepping, then follow-spacing), so it sees each entity's
+    // true final displacement for the tick.
+    for (const ped of this.pedestrians) snapPedestrianPrevIfTeleported(ped, dt);
+    for (const vehicle of this.vehicles) snapVehiclePrevIfTeleported(vehicle, dt);
+    for (const flyer of this.flyingVehicles) snapFlyingVehiclePrevIfTeleported(flyer, dt);
 
     this.trySpawnPedestrian(grid, playerX, playerY, playerZ);
     this.trySpawnVehicle(grid, playerX, playerZ);

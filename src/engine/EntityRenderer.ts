@@ -8,6 +8,7 @@ import {
   vehicleGlowMaterial,
 } from './Materials';
 import type { FlyingVehicle } from '../entities/FlyingVehicle';
+import { lerp, shortestArcLerp } from '../entities/interpolation';
 import type { Pedestrian } from '../entities/Pedestrian';
 import type { Vehicle } from '../entities/Vehicle';
 
@@ -104,29 +105,59 @@ export class EntityRenderer {
     ];
   }
 
-  /** Call once per animation frame (not the fixed sim tick) to sync instance matrices from current simulation state. */
+  /**
+   * Call once per animation frame (not the fixed sim tick) to sync instance
+   * matrices from simulation state interpolated by `alpha`.
+   *
+   * `alpha` (see `Engine.ts`'s doc comment on it) is standard fixed-timestep
+   * interpolation: each entity's rendered position/heading is
+   * `lerp(prev, current, alpha)`, `prev` being its state as of the *previous*
+   * fixed tick (see `Pedestrian.prevX` and its siblings). That means the
+   * render is always up to one `FIXED_TIMESTEP` (~16ms) behind the freshest
+   * simulation state -- including the `alpha === 0` case that follows a
+   * step-capped frame (see `FixedTimestep.ts`'s `MAX_STEPS_PER_FRAME`), which
+   * renders `prev` exactly, same as any other frame that happens to land on
+   * an exact step boundary. That's deliberate, not a bug: the alternative,
+   * extrapolating past `current` using its current velocity, can overshoot
+   * or point the wrong way for a single frame right as an entity turns at an
+   * intersection or a stair landing -- exactly the kind of glitch this task
+   * exists to remove, not reintroduce. A constant, imperceptible one-tick
+   * latency on background NPCs is the trade worth making; nothing here
+   * touches the player camera (out of scope -- see this class's doc comment).
+   */
   update(
     pedestrians: readonly Pedestrian[],
     vehicles: readonly Vehicle[],
     flyingVehicles: readonly FlyingVehicle[],
     groundY: number,
     elapsedTime: number,
+    alpha: number,
   ): void {
-    this.updatePedestrians(pedestrians, elapsedTime);
-    this.updateVehicles(vehicles, groundY);
-    this.updateFlyingVehicles(flyingVehicles);
+    this.updatePedestrians(pedestrians, elapsedTime, alpha);
+    this.updateVehicles(vehicles, groundY, alpha);
+    this.updateFlyingVehicles(flyingVehicles, alpha);
   }
 
-  private updatePedestrians(pedestrians: readonly Pedestrian[], elapsedTime: number): void {
+  /** Heading angle for an entity whose current direction is (`dirX`, `dirZ`), matching `atan2`'s zero-vector convention used throughout this class (0 rad, i.e. facing +z, at the instant of spawn before a first heading is chosen). */
+  private static headingOf(dirX: number, dirZ: number): number {
+    return dirX !== 0 || dirZ !== 0 ? Math.atan2(dirX, dirZ) : 0;
+  }
+
+  private updatePedestrians(pedestrians: readonly Pedestrian[], elapsedTime: number, alpha: number): void {
     const count = Math.min(pedestrians.length, this.pedestrianBodyMesh.instanceMatrix.count);
 
     for (let i = 0; i < count; i++) {
       const ped = pedestrians[i] as Pedestrian;
-      const feetY = ped.y + 1;
-      const yaw = ped.dirX !== 0 || ped.dirZ !== 0 ? Math.atan2(ped.dirX, ped.dirZ) : 0;
+      const x = lerp(ped.prevX, ped.x, alpha);
+      const y = lerp(ped.prevY, ped.y, alpha);
+      const z = lerp(ped.prevZ, ped.z, alpha);
+      const prevYaw = EntityRenderer.headingOf(ped.prevDirX, ped.prevDirZ);
+      const currYaw = EntityRenderer.headingOf(ped.dirX, ped.dirZ);
+      const yaw = shortestArcLerp(prevYaw, currYaw, alpha);
+      const feetY = y + 1;
       const bob = Math.sin(elapsedTime * BOB_FREQUENCY + i) * BOB_AMPLITUDE;
 
-      this.dummy.position.set(ped.x, feetY + PEDESTRIAN_BODY_HALF_HEIGHT + bob, ped.z);
+      this.dummy.position.set(x, feetY + PEDESTRIAN_BODY_HALF_HEIGHT + bob, z);
       this.dummy.rotation.set(0, yaw, 0);
       this.dummy.updateMatrix();
       this.pedestrianBodyMesh.setMatrixAt(i, this.dummy.matrix);
@@ -142,15 +173,19 @@ export class EntityRenderer {
     this.pedestrianAccentMesh.instanceMatrix.needsUpdate = true;
   }
 
-  private updateVehicles(vehicles: readonly Vehicle[], groundY: number): void {
+  private updateVehicles(vehicles: readonly Vehicle[], groundY: number, alpha: number): void {
     const feetY = groundY + 1;
     const count = Math.min(vehicles.length, this.vehicleBodyMesh.instanceMatrix.count);
 
     for (let i = 0; i < count; i++) {
       const vehicle = vehicles[i] as Vehicle;
-      const yaw = vehicle.dirX !== 0 || vehicle.dirZ !== 0 ? Math.atan2(vehicle.dirX, vehicle.dirZ) : 0;
+      const x = lerp(vehicle.prevX, vehicle.x, alpha);
+      const z = lerp(vehicle.prevZ, vehicle.z, alpha);
+      const prevYaw = EntityRenderer.headingOf(vehicle.prevDirX, vehicle.prevDirZ);
+      const currYaw = EntityRenderer.headingOf(vehicle.dirX, vehicle.dirZ);
+      const yaw = shortestArcLerp(prevYaw, currYaw, alpha);
 
-      this.dummy.position.set(vehicle.x, feetY + VEHICLE_HOVER_HEIGHT + VEHICLE_BODY_HALF_HEIGHT, vehicle.z);
+      this.dummy.position.set(x, feetY + VEHICLE_HOVER_HEIGHT + VEHICLE_BODY_HALF_HEIGHT, z);
       this.dummy.rotation.set(0, yaw, 0);
       this.dummy.updateMatrix();
       this.vehicleBodyMesh.setMatrixAt(i, this.dummy.matrix);
@@ -169,15 +204,24 @@ export class EntityRenderer {
     this.vehicleGlowMesh.instanceMatrix.needsUpdate = true;
   }
 
-  /** No hover-bob, no ground offset — a flying vehicle's `y` is its own fixed lane altitude (see `FlyingVehicle.y`'s doc comment). */
-  private updateFlyingVehicles(flyingVehicles: readonly FlyingVehicle[]): void {
+  /**
+   * No hover-bob, no ground offset — a flying vehicle's `y` is its own fixed
+   * lane altitude (see `FlyingVehicle.y`'s doc comment). No heading
+   * interpolation either: `dirX`/`dirZ` are fixed for its whole lifetime (a
+   * flying vehicle never turns — see `FlyingVehicle.ts`'s doc comment), so
+   * `prevDirX`/`prevDirZ` don't exist on the type and there's nothing to lerp
+   * on that axis; only position benefits from `alpha` here.
+   */
+  private updateFlyingVehicles(flyingVehicles: readonly FlyingVehicle[], alpha: number): void {
     const count = Math.min(flyingVehicles.length, this.flyingVehicleBodyMesh.instanceMatrix.count);
 
     for (let i = 0; i < count; i++) {
       const vehicle = flyingVehicles[i] as FlyingVehicle;
-      const yaw = vehicle.dirX !== 0 || vehicle.dirZ !== 0 ? Math.atan2(vehicle.dirX, vehicle.dirZ) : 0;
+      const x = lerp(vehicle.prevX, vehicle.x, alpha);
+      const z = lerp(vehicle.prevZ, vehicle.z, alpha);
+      const yaw = EntityRenderer.headingOf(vehicle.dirX, vehicle.dirZ);
 
-      this.dummy.position.set(vehicle.x, vehicle.y + FLYING_VEHICLE_BODY_HALF_HEIGHT, vehicle.z);
+      this.dummy.position.set(x, vehicle.y + FLYING_VEHICLE_BODY_HALF_HEIGHT, z);
       this.dummy.rotation.set(0, yaw, 0);
       this.dummy.updateMatrix();
       this.flyingVehicleBodyMesh.setMatrixAt(i, this.dummy.matrix);

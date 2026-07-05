@@ -113,14 +113,19 @@ export class EntitySystem {
     out.length = flyers.length;
   }
 
-  /** Per-animation-frame sync of instanced mesh matrices from current simulation state. */
-  render(): void {
+  /**
+   * Per-animation-frame sync of instanced mesh matrices, interpolated
+   * between the previous and current fixed sim tick by `alpha` — see
+   * `EntityRenderer.update`'s doc comment for the interpolation semantics.
+   */
+  render(alpha: number): void {
     this.renderer.update(
       this.simulation.pedestrianList,
       this.simulation.vehicleList,
       this.simulation.flyingVehicleList,
       this.groundY,
       this.elapsedTime,
+      alpha,
     );
   }
 

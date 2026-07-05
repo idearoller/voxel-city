@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildNavGrid, isElevatedWalkableCell, isSidewalkCell, type NavGrid } from '../src/entities/NavGrid';
-import { createPedestrianAt, stepPedestrian } from '../src/entities/Pedestrian';
+import { captureRenderPrevState, createPedestrianAt, snapRenderPrevIfTeleported, stepPedestrian } from '../src/entities/Pedestrian';
 import { CONCRETE, METAL, SIDEWALK } from '../src/world/BlockRegistry';
 import { createRng } from '../src/gen/rng';
 import { World } from '../src/world/World';
@@ -198,5 +198,62 @@ describe('stepPedestrian on an elevated deck', () => {
     stepPedestrian(ped, 1 / 60, grid, rng);
 
     expect(ped.alive).toBe(false);
+  });
+});
+
+describe('render-interpolation state (prevX/prevY/prevZ/prevDirX/prevDirZ)', () => {
+  it('createPedestrianAt seeds prev equal to the initial position/heading, so a fresh spawn never smears in', () => {
+    const ped = createPedestrianAt(4, 6, 12, 1.4);
+    expect(ped.prevX).toBe(ped.x);
+    expect(ped.prevY).toBe(ped.y);
+    expect(ped.prevZ).toBe(ped.z);
+    expect(ped.prevDirX).toBe(ped.dirX);
+    expect(ped.prevDirZ).toBe(ped.dirZ);
+  });
+
+  it('captureRenderPrevState snapshots the current position/heading, and a subsequent step leaves it holding the pre-step values', () => {
+    const cells: [number, number][] = [];
+    for (let x = 0; x < 15; x++) cells.push([x, 5]);
+    const grid = buildGridWithSidewalkCells(cells);
+    const rng = createRng('ped-prev-capture');
+    const ped = createPedestrianAt(5, 5, GROUND_Y, 2);
+    // Give it a real heading first so dirX/dirZ aren't both still 0.
+    stepPedestrian(ped, 1 / 60, grid, rng);
+
+    const xBefore = ped.x;
+    const zBefore = ped.z;
+    const dirXBefore = ped.dirX;
+    const dirZBefore = ped.dirZ;
+
+    captureRenderPrevState(ped);
+    stepPedestrian(ped, 1 / 60, grid, rng);
+
+    expect(ped.x).not.toBe(xBefore); // sanity: the step actually moved it
+    expect(ped.prevX).toBe(xBefore);
+    expect(ped.prevZ).toBe(zBefore);
+    expect(ped.prevDirX).toBe(dirXBefore);
+    expect(ped.prevDirZ).toBe(dirZBefore);
+  });
+
+  it('snapRenderPrevIfTeleported leaves prev untouched after ordinary bounded movement', () => {
+    const ped = createPedestrianAt(5, 5, GROUND_Y, 2);
+    captureRenderPrevState(ped);
+    ped.x += (2 * (1 / 60)) / 2; // well within the speed*dt bound
+
+    snapRenderPrevIfTeleported(ped, 1 / 60);
+
+    expect(ped.prevX).toBe(5.5); // unchanged from captureRenderPrevState's snapshot
+  });
+
+  it('snapRenderPrevIfTeleported collapses prev to current when a same-tick jump is implausibly large', () => {
+    const ped = createPedestrianAt(5, 5, GROUND_Y, 2);
+    captureRenderPrevState(ped);
+    ped.x += 500; // a teleport far beyond anything stepPedestrian could produce in one tick
+
+    snapRenderPrevIfTeleported(ped, 1 / 60);
+
+    expect(ped.prevX).toBe(ped.x); // snapped -- no smear across the map next render
+    expect(ped.prevY).toBe(ped.y);
+    expect(ped.prevZ).toBe(ped.z);
   });
 });

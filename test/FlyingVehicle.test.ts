@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyFlyingVehicleFollowSpacing,
+  captureRenderPrevState,
   createFlyingVehicleOnLane,
   FLYING_VEHICLE_FOLLOW_DISTANCE,
   FLYING_VEHICLE_MIN_SEPARATION,
+  snapRenderPrevIfTeleported,
   stepFlyingVehicle,
   type FlyingVehicle,
 } from '../src/entities/FlyingVehicle';
@@ -172,5 +174,52 @@ describe('applyFlyingVehicleFollowSpacing', () => {
         expect(lead2.x - rear.x).toBeGreaterThanOrEqual(FLYING_VEHICLE_MIN_SEPARATION - 1e-6);
       }
     }
+  });
+});
+
+describe('render-interpolation state (prevX/prevZ)', () => {
+  it('createFlyingVehicleOnLane seeds prev equal to the initial position, so a fresh spawn never smears in', () => {
+    const lane = makeLane({ axis: 'x', fixed: 150, altitude: 128 });
+    const vehicle = createFlyingVehicleOnLane(lane, 30, 1, 15);
+    expect(vehicle.prevX).toBe(vehicle.x);
+    expect(vehicle.prevZ).toBe(vehicle.z);
+  });
+
+  it('captureRenderPrevState snapshots the current position, and a subsequent step leaves it holding the pre-step position', () => {
+    const lane = makeLane({ axis: 'x', fixed: 200, altitude: 104 });
+    const vehicle = createFlyingVehicleOnLane(lane, 50, 1, 20);
+
+    const xBefore = vehicle.x;
+    const zBefore = vehicle.z;
+
+    captureRenderPrevState(vehicle);
+    stepFlyingVehicle(vehicle, 1 / 60, WIDTH, DEPTH);
+
+    expect(vehicle.x).not.toBe(xBefore); // sanity: the step actually moved it
+    expect(vehicle.prevX).toBe(xBefore);
+    expect(vehicle.prevZ).toBe(zBefore);
+  });
+
+  it('snapRenderPrevIfTeleported leaves prev untouched after ordinary bounded movement', () => {
+    const lane = makeLane({ axis: 'x', fixed: 200, altitude: 104 });
+    const vehicle = createFlyingVehicleOnLane(lane, 50, 1, 20);
+    captureRenderPrevState(vehicle);
+    vehicle.x += (20 * (1 / 60)) / 2; // well within the speed*dt bound
+
+    snapRenderPrevIfTeleported(vehicle, 1 / 60);
+
+    expect(vehicle.prevX).toBe(50);
+  });
+
+  it('snapRenderPrevIfTeleported collapses prev to current when a same-tick jump is implausibly large', () => {
+    const lane = makeLane({ axis: 'x', fixed: 200, altitude: 104 });
+    const vehicle = createFlyingVehicleOnLane(lane, 50, 1, 20);
+    captureRenderPrevState(vehicle);
+    vehicle.x += 500; // a teleport far beyond anything stepFlyingVehicle could produce in one tick
+
+    snapRenderPrevIfTeleported(vehicle, 1 / 60);
+
+    expect(vehicle.prevX).toBe(vehicle.x); // snapped -- no smear across the sky next render
+    expect(vehicle.prevZ).toBe(vehicle.z);
   });
 });

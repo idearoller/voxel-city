@@ -12,6 +12,7 @@
  */
 
 import type { SkyLane } from './SkyLane';
+import { isTeleportJump } from './interpolation';
 import { approachSpeed, computeFollowOrder, followTargetSpeed, type LaneMember } from './traffic';
 
 export interface FlyingVehicle {
@@ -29,6 +30,18 @@ export interface FlyingVehicle {
   readonly cruiseSpeed: number;
   /** False once the vehicle has crossed the world edge — the simulation removes it next tick. */
   alive: boolean;
+
+  /**
+   * Render-interpolation snapshot: `x`/`z` as of the end of the previous
+   * fixed sim tick — see `Pedestrian.prevX`'s doc comment for the full
+   * rationale. No `prevY`/`prevDir` counterparts: altitude and heading are
+   * both fixed for a flying vehicle's whole lifetime (see `y`/`dirX`/`dirZ`
+   * above), so there is never anything to interpolate on those axes.
+   * `createFlyingVehicleOnLane` seeds these equal to the initial position so
+   * a freshly spawned vehicle's first render never smears in from nowhere.
+   */
+  prevX: number;
+  prevZ: number;
 }
 
 /**
@@ -54,7 +67,34 @@ export function createFlyingVehicleOnLane(
   const dirZ = lane.axis === 'z' ? direction : 0;
   const x = lane.axis === 'x' ? travelCoord : lane.fixed;
   const z = lane.axis === 'z' ? travelCoord : lane.fixed;
-  return { x, z, y: lane.altitude, dirX, dirZ, speed, cruiseSpeed: speed, alive: true };
+  return { x, z, y: lane.altitude, dirX, dirZ, speed, cruiseSpeed: speed, alive: true, prevX: x, prevZ: z };
+}
+
+/**
+ * Snapshots `vehicle`'s current position into its `prev*` fields — call once
+ * per fixed tick, before `stepFlyingVehicle`, so `EntityRenderer` has "where
+ * it was" to lerp from (see `FlyingVehicle.prevX`'s doc comment).
+ */
+export function captureRenderPrevState(vehicle: FlyingVehicle): void {
+  vehicle.prevX = vehicle.x;
+  vehicle.prevZ = vehicle.z;
+}
+
+/**
+ * Collapses `vehicle`'s render-interpolation window to a single point (`prev`
+ * := current) if this tick's total movement was farther than any legitimate
+ * tick could plausibly cover; see `isTeleportJump`. No flying vehicle can
+ * actually jump today (straight-line flight bounded by `speed * dt`, and the
+ * follow-spacing hard clamp only ever closes a gap down to
+ * `FLYING_VEHICLE_MIN_SEPARATION`), but this is the safety net for a future
+ * teleport-ish feature (or a regression) rather than papering over a known
+ * one. Call once per tick, after `applyFlyingVehicleFollowSpacing` has run.
+ */
+export function snapRenderPrevIfTeleported(vehicle: FlyingVehicle, dt: number): void {
+  if (isTeleportJump(vehicle.prevX, 0, vehicle.prevZ, vehicle.x, 0, vehicle.z, vehicle.speed, dt)) {
+    vehicle.prevX = vehicle.x;
+    vehicle.prevZ = vehicle.z;
+  }
 }
 
 /** Advances a flying vehicle by `dt` seconds along its fixed heading, despawning it the instant it crosses the world bounds. */

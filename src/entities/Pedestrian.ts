@@ -7,6 +7,7 @@
  */
 
 import { isWalkableSurfaceCell, type NavGrid, type StairLink } from './NavGrid';
+import { isTeleportJump } from './interpolation';
 import type { Rng } from '../gen/rng';
 
 /**
@@ -58,6 +59,23 @@ export interface Pedestrian {
    * cross to the other surface, then resume ordinary wandering there.
    */
   stair: StairCommitment | null;
+
+  /**
+   * Render-interpolation snapshot: `x`/`y`/`z`/`dirX`/`dirZ` as of the end of
+   * the previous fixed sim tick. `EntityRenderer` lerps from these to the
+   * current values by the frame's `alpha` (see `Engine.ts`'s doc comment on
+   * it) so motion reads smoothly between 60Hz ticks instead of stepping.
+   * Never read by simulation logic itself -- only `captureRenderPrevState`
+   * and `snapRenderPrevIfTeleported` (below) write it, and only
+   * `EntityRenderer` reads it. `createPedestrianAt` seeds these equal to the
+   * initial position/heading so a freshly spawned pedestrian's first render
+   * never smears in from nowhere.
+   */
+  prevX: number;
+  prevY: number;
+  prevZ: number;
+  prevDirX: number;
+  prevDirZ: number;
 }
 
 /** Distance below which a pedestrian is considered to have arrived at its target cell's center. */
@@ -87,9 +105,11 @@ const NEIGHBOR_DIRS: readonly [number, number][] = [
 
 /** Spawns a pedestrian already centered on (cellX, cellZ) at surface `y` — its first `step` will immediately pick a real heading. */
 export function createPedestrianAt(cellX: number, cellZ: number, y: number, speed: number): Pedestrian {
+  const x = cellX + 0.5;
+  const z = cellZ + 0.5;
   return {
-    x: cellX + 0.5,
-    z: cellZ + 0.5,
+    x,
+    z,
     cellX,
     cellZ,
     y,
@@ -98,7 +118,42 @@ export function createPedestrianAt(cellX: number, cellZ: number, y: number, spee
     speed,
     alive: true,
     stair: null,
+    prevX: x,
+    prevY: y,
+    prevZ: z,
+    prevDirX: 0,
+    prevDirZ: 0,
   };
+}
+
+/**
+ * Snapshots `ped`'s current position/heading into its `prev*` fields — call
+ * once per fixed tick, before `stepPedestrian`, so `EntityRenderer` has
+ * "where it was" to lerp from (see `Pedestrian.prevX`'s doc comment).
+ */
+export function captureRenderPrevState(ped: Pedestrian): void {
+  ped.prevX = ped.x;
+  ped.prevY = ped.y;
+  ped.prevZ = ped.z;
+  ped.prevDirX = ped.dirX;
+  ped.prevDirZ = ped.dirZ;
+}
+
+/**
+ * Collapses `ped`'s render-interpolation window to a single point (`prev` :=
+ * current) if this tick's movement was farther than any legitimate walk step
+ * could plausibly cover — see `isTeleportJump`. Pedestrians have no teleport
+ * path today (stair/deck transitions are already bounded by `speed * dt`,
+ * same as ordinary walking), but this is the safety net that keeps a future
+ * one (or a regression) from smearing across a render frame. Call once per
+ * tick, after `stepPedestrian` has run.
+ */
+export function snapRenderPrevIfTeleported(ped: Pedestrian, dt: number): void {
+  if (isTeleportJump(ped.prevX, ped.prevY, ped.prevZ, ped.x, ped.y, ped.z, ped.speed, dt)) {
+    ped.prevX = ped.x;
+    ped.prevY = ped.y;
+    ped.prevZ = ped.z;
+  }
 }
 
 /**
