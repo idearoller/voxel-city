@@ -12,7 +12,7 @@ import {
 } from '../src/gen/infrastructure';
 import { scanElevatorShafts, type ElevatorShaft } from '../src/elevators/ElevatorScanner';
 import { PLAYER_WIDTH, tryAutoStep, type IsSolidFn } from '../src/player/PlayerCollision';
-import { AIR, ASPHALT, GRAVEL, PARK_GRASS, TREE_TRUNK } from '../src/world/BlockRegistry';
+import { AIR, ASPHALT, GRAVEL, NEON_CYAN, PARK_GRASS, TREE_TRUNK } from '../src/world/BlockRegistry';
 import { parseChunkKey } from '../src/world/coords';
 import { World } from '../src/world/World';
 
@@ -530,6 +530,43 @@ describe('generateCity playability: end-to-end bridge connectivity (real climb p
     }
 
     expect(checkedAnyTopStep).toBe(true);
+  });
+
+  /**
+   * Task 34: bridge rails used to be 2 voxels tall (`level + 1` and
+   * `level + 2`), which put solid NEON material directly at a standing
+   * player's eye height (~1.6-1.7m above the deck they're walking on,
+   * i.e. inside the `level + 2` cell) and walled off the city view while
+   * crossing. Pinned on real `generateCity` output (not a synthetic
+   * `Bridge` struct) so this can't regress silently: every rail cell along
+   * every real bridge's two edge rows must have open sky at `level + 2`,
+   * with the rail itself still standing at `level + 1` (so it's a height
+   * reduction, not a removal — the deck must still be fenced).
+   */
+  it('keeps every real bridge rail exactly 1 voxel tall, so a standing player can see over it', () => {
+    let checkedAnyRailCell = false;
+
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+
+      for (const bridge of bridges) {
+        const railRows =
+          bridge.axis === 'x'
+            ? [bridge.z, bridge.z + bridge.depth - 1].map((railZ) => Array.from({ length: bridge.width }, (_, dx) => [bridge.x + dx, railZ] as const))
+            : [bridge.x, bridge.x + bridge.width - 1].map((railX) => Array.from({ length: bridge.depth }, (_, dz) => [railX, bridge.z + dz] as const));
+
+        for (const row of railRows) {
+          for (const [x, z] of row) {
+            checkedAnyRailCell = true;
+            expect(world.getBlock(x, bridge.level + 1, z)).toBe(NEON_CYAN); // still fenced at deck height
+            expect(world.getBlock(x, bridge.level + 2, z)).toBe(AIR); // open sky at eye height
+          }
+        }
+      }
+    }
+
+    expect(checkedAnyRailCell).toBe(true);
   });
 });
 

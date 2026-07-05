@@ -239,10 +239,11 @@ function computeFlowField(
  * (where the tower's solid structure happens to extend to `y - 1` right at
  * the doorway threshold) but keeps ~98%+ of genuine deck area.
  *
- * Bridge decks are 3-wide with 2-high NEON rails along the two edge
+ * Bridge decks are 3-wide with a 1-high NEON rail along the two edge
  * rows/columns (see `infrastructure.ts`'s `writeBridge`); the headroom check
- * alone already excludes those edge cells (the rail itself occupies the
- * clearance voxel) without needing to know a bridge's axis or lane offset.
+ * alone already excludes those edge cells (the rail occupies the `y + 1`
+ * clearance voxel checked here, even though it no longer also occupies
+ * `y + 2`) without needing to know a bridge's axis or lane offset.
  * Walkway decks have no rails, so their whole footprint passes both checks.
  * Scanning by block content rather than by `GenerationResult`'s
  * `bridges`/`walkways` plans is what keeps this rebuildable after a `.vxc`

@@ -176,7 +176,7 @@ describe('planBridges', () => {
 });
 
 describe('writeBridge', () => {
-  it('writes a flat METAL deck at the chosen level, 2-high NEON rails on the edges, and air door openings into both towers', () => {
+  it('writes a flat METAL deck at the chosen level, 1-high NEON rails on the edges (open sky above, so a standing player can see over them), and air door openings into both towers', () => {
     const towerA = tower({ x: 0, z: 0, width: 10, depth: 10, height: 60 });
     const towerB = tower({ x: 20, z: 0, width: 10, depth: 10, height: 60 });
 
@@ -197,11 +197,13 @@ describe('writeBridge', () => {
         expect(world.getBlock(b.x + dx, b.level, b.z + dz)).toBe(METAL);
       }
     }
-    // Rails: 2-high NEON on the two edge rows (axis 'x' => edges are z and z+depth-1).
+    // Rails: 1-high NEON on the two edge rows (axis 'x' => edges are z and
+    // z+depth-1) -- open air directly above, at level + 2, is what lets a
+    // standing player see over the rail instead of into a solid wall.
     for (let dx = 0; dx < b.width; dx++) {
       for (const railZ of [b.z, b.z + b.depth - 1]) {
         expect(world.getBlock(b.x + dx, b.level + 1, railZ)).toBe(NEON_CYAN);
-        expect(world.getBlock(b.x + dx, b.level + 2, railZ)).toBe(NEON_CYAN);
+        expect(world.getBlock(b.x + dx, b.level + 2, railZ)).toBe(AIR);
       }
     }
     // Middle lane stays clear (walkable), 2 voxels of headroom.

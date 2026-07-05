@@ -70,7 +70,14 @@ const BRIDGE_MIN_TOWER_FOOTPRINT = 10;
  * that).
  */
 export const SKY_LEVELS = [30, 50, 70, 90] as const;
-/** Deck (1) + rails (2) + headroom (1) that must fit below the tower's roof at the chosen sky level. */
+/**
+ * Deck (1) + rail (1) + headroom (2) that must fit below the tower's roof at
+ * the chosen sky level. Kept at its original total of 4 (rather than shrunk
+ * to 3 to match the rail's own height dropping from 2 voxels to 1 — see
+ * `writeBridgeDeckAndRails`) so eligibility is unchanged: this is a
+ * conservative "does the level fit" gate, not a tight packing, and towers
+ * that used to qualify should keep qualifying.
+ */
 const SKY_LEVEL_MARGIN = 4;
 const BRIDGE_DECK_WIDTH = 3;
 
@@ -329,11 +336,38 @@ export function planBridges(buildings: readonly BuildingPlan[], rng: Rng): Bridg
 }
 
 /**
- * Writes a bridge's solid METAL deck across the full 3-wide band and the
- * 2-high NEON rails along its two edge rows — but NOT the walkway clearing
+ * Writes a bridge's solid METAL deck across the full 3-wide band and a
+ * 1-high NEON rail along its two edge rows — but NOT the walkway clearing
  * (middle lane + both door openings); see `writeBridgeWalkway` for that, and
  * this pair's own doc comment for why they're split out rather than one
  * function like before.
+ *
+ * The rail is exactly 1 voxel tall (`level + 1`, i.e. flush with the deck's
+ * own walking surface, nothing at `level + 2`) rather than the 2 voxels it
+ * used to be. A standing player's eyes sit roughly 1.6-1.7m above the deck
+ * they're walking on — comfortably inside the `level + 2` cell — so a
+ * 2-high rail put solid material directly in the eyeline and walled off the
+ * city while crossing a bridge. A 1-high rail tops out well below eye
+ * height (classic low guard-rail look) while `level + 2` stays open sky.
+ *
+ * Deliberate tradeoff (Task 34): a 1-high rail is exactly the height
+ * `tryAutoStep` (`src/player/PlayerCollision.ts`) climbs, unlike the old 2-high rail
+ * which it always refused (taller obstacles get no benefit from the lift).
+ * So a player who deliberately strafes off the walkable middle lane onto a
+ * rail cell, then keeps moving the same direction, auto-steps onto the
+ * rail's top and off the bridge's edge into open air one tick later — the
+ * old rail made that impossible; this one doesn't. Left as-is rather than
+ * "fixed": normal forward travel down the middle lane never touches a rail
+ * cell (`writeBridgeWalkway` only clears/uses the lane one row in from
+ * both rails), so this requires the same kind of deliberate sideways move a
+ * real waist-high guard rail doesn't stop a person from climbing over
+ * either — it reads as parkour, not an accidental fall, and NPCs can't do
+ * it at all (`NavGrid`'s `walkable` grid never marks a rail cell walkable,
+ * so pedestrian pathing never routes through one; see `buildElevatedLevel`).
+ * Preventing it outright would need a collision shape shorter than a full
+ * voxel that still renders/reads as 1 voxel tall, which this engine's
+ * binary per-voxel collision doesn't support — worth revisiting only if
+ * partial-height collision ever gets added for another reason.
  */
 export function writeBridgeDeckAndRails(world: World, bridge: Bridge): void {
   const { axis, level, x, z, width, depth } = bridge;
@@ -348,14 +382,12 @@ export function writeBridgeDeckAndRails(world: World, bridge: Bridge): void {
     for (let dx = 0; dx < width; dx++) {
       for (const railZ of [z, z + depth - 1]) {
         world.setBlockRaw(x + dx, level + 1, railZ, NEON_CYAN);
-        world.setBlockRaw(x + dx, level + 2, railZ, NEON_CYAN);
       }
     }
   } else {
     for (let dz = 0; dz < depth; dz++) {
       for (const railX of [x, x + width - 1]) {
         world.setBlockRaw(railX, level + 1, z + dz, NEON_CYAN);
-        world.setBlockRaw(railX, level + 2, z + dz, NEON_CYAN);
       }
     }
   }
