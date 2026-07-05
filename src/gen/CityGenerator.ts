@@ -133,7 +133,7 @@ function placeVerticalInfrastructure(
   const stairTowerKeys = new Set(
     bridges.flatMap((bridge) => [towerKey(bridge.towerA), towerKey(bridge.towerB)]),
   );
-  const elevatorShafts = planElevatorShafts(buildings, rng.fork('elevators'), stairTowerKeys);
+  const elevatorShafts = planElevatorShafts(buildings, rng.fork('elevators'), stairTowerKeys, bridges);
   for (const marker of elevatorShafts) writeElevatorShaft(world, marker);
 
   const walkways = planWalkways(layout, BUILDING_BASE_Y);

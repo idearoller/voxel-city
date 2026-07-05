@@ -846,6 +846,56 @@ export function canElevatorAndStairShaftCoexist(width: number, depth: number): b
   return gapX >= 1 || gapZ >= 1;
 }
 
+/**
+ * The single transverse column (relative to `tower`'s own tier0 origin) a
+ * pedestrian walks straight down when stepping through `bridge`'s door onto
+ * `tower`'s sky lobby, or `null` if `tower` isn't the wall-adjacent side of
+ * this bridge at all (see this function's doc comment for which side that
+ * is). Unlike `stairFootprintRange`, this is a single column, not a 3-wide
+ * range — a bridge door is only ever `writeBridge`'s one `midX`/`midZ` lane
+ * wide.
+ */
+function bridgeDoorTransverseOffset(tower: BuildingPlan, bridge: Bridge): number | null {
+  if (bridge.towerB !== tower) return null; // see doc comment below: only towerB's door ever lands near the elevator's fixed corner
+  const tier0 = tower.tiers[0] as NonNullable<(typeof tower.tiers)[0]>;
+  return bridge.axis === 'x' ? bridge.z + 1 - tier0.z : bridge.x + 1 - tier0.x;
+}
+
+/**
+ * True when placing an elevator shaft at `tower`'s fixed NW corner (see
+ * `planElevatorShafts`) would never physically block any of `tower`'s own
+ * bridge doorways.
+ *
+ * `writeBridge` always carves a bridge's door into the *higher-coordinate*
+ * partner's own north (axis `'z'`) or west (axis `'x'`) wall — i.e.
+ * `bridge.towerB`, never `towerA` (whose door lands on the opposite,
+ * lower-coordinate-facing wall: south or east). Those are exactly the two
+ * walls nearest the elevator's fixed corner (`ELEVATOR_FOOTPRINT_RANGE`
+ * starts one column in from both of them), so `towerA`'s door is never at
+ * risk — only `towerB`'s.
+ *
+ * A door is a single column, not a 3-wide rect like a stair shaft, so the
+ * geometry is simpler than `canElevatorAndStairShaftCoexist`: a pedestrian
+ * walks straight in from the door at a fixed transverse offset, and only
+ * ever collides with the elevator if that one offset falls inside
+ * `ELEVATOR_FOOTPRINT_RANGE` — the elevator's shell (`writeElevatorShaft`'s
+ * `isShell` rows) occupies every transverse offset in that range for the
+ * *entire* depth the elevator extends into the room, so there is no partial
+ * miss the way there can be between two same-width rects. This was a real,
+ * shipped defect (Sam's residual-bridge-reach review): an elevator sitting
+ * on this corridor silently walled a stair top off from its own bridge, with
+ * no error anywhere — voxels were all individually well-formed, just
+ * arranged so nothing could walk from one to the other.
+ */
+export function canElevatorAndBridgeDoorCoexist(tower: BuildingPlan, bridges: readonly Bridge[]): boolean {
+  for (const bridge of bridges) {
+    const offset = bridgeDoorTransverseOffset(tower, bridge);
+    if (offset === null) continue;
+    if (offset >= ELEVATOR_FOOTPRINT_RANGE[0] && offset <= ELEVATOR_FOOTPRINT_RANGE[1]) return false;
+  }
+  return true;
+}
+
 export interface ElevatorShaftMarker {
   building: BuildingPlan;
   x: number;
@@ -877,11 +927,24 @@ export interface ElevatorShaftMarker {
  * room's doorway-adjacent walkway ring, sealing it off, and a shop's whole
  * ground floor is meant to be one open retail room rather than sharing it
  * with a vertical core.
+ *
+ * Independently again, a tower with any bridge attached is only eligible
+ * once `canElevatorAndBridgeDoorCoexist` says the elevator's fixed corner
+ * won't block that bridge's own door corridor (see that function's doc
+ * comment) — a *different* collision than the stair-shaft one above: the
+ * stair shaft is centered on the tower, so it's the elevator's diagonal
+ * opposite; a bridge door can land on the elevator's own north or west wall,
+ * which `canElevatorAndStairShaftCoexist`'s footprint-vs-footprint check
+ * never considers at all. `bridges` defaults to empty for callers (chiefly
+ * this file's own tests) that construct towers without a full bridge plan —
+ * skipping this check entirely is correct there since there's no door to
+ * collide with.
  */
 export function planElevatorShafts(
   buildings: readonly BuildingPlan[],
   rng: Rng,
   stairShaftTowerKeys: ReadonlySet<string>,
+  bridges: readonly Bridge[] = [],
 ): ElevatorShaftMarker[] {
   const markers: ElevatorShaftMarker[] = [];
 
@@ -891,6 +954,9 @@ export function planElevatorShafts(
     const key = towerKey(building);
     const hasStairShaft = stairShaftTowerKeys.has(key);
     if (hasStairShaft && !canElevatorAndStairShaftCoexist(building.width, building.depth)) {
+      continue;
+    }
+    if (!canElevatorAndBridgeDoorCoexist(building, bridges)) {
       continue;
     }
 

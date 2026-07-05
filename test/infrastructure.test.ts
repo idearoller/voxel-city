@@ -810,6 +810,80 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     }
     expect(written).toBe(true);
   });
+
+  /**
+   * Regression coverage for a real, shipped defect (Sam's residual
+   * bridge-reach review sweep, seeds `sam-probe-3`/`sam-probe-7` among
+   * others): the elevator's fixed NW-corner footprint sits close enough to a
+   * tower's own north/west wall that a bridge door carved into *that* wall
+   * (always `bridge.towerB`'s door — see `canElevatorAndBridgeDoorCoexist`'s
+   * doc comment) lands directly in the elevator's path, one row behind the
+   * threshold. `canElevatorAndStairShaftCoexist` alone never caught this — it
+   * only ever compares the elevator against the *centered* stair shaft, never
+   * against a bridge door on the elevator's own near walls.
+   */
+  function bridgeAt(towerA: BuildingPlan, towerB: BuildingPlan, axis: 'x' | 'z', transverseOffset: number): Bridge {
+    return axis === 'x'
+      ? { axis, level: 30, x: towerA.x + towerA.width, z: towerB.z + transverseOffset - 1, width: 4, depth: 3, towerA, towerB }
+      : { axis, level: 30, x: towerB.x + transverseOffset - 1, z: towerA.z + towerA.depth, width: 3, depth: 4, towerA, towerB };
+  }
+
+  it('never places an elevator whose fixed corner would block a bridge door on its own north wall (axis z, towerB)', () => {
+    const towerA = tower({ x: 0, z: 0, width: 12, depth: 12, height: 60 });
+    const towerB = tower({ x: 0, z: 30, width: 12, depth: 12, height: 60 });
+    // Door's transverse (x) offset relative to towerB's own tier0 = 2, squarely inside the elevator's [1,3] range.
+    const bridge = bridgeAt(towerA, towerB, 'z', 2);
+    for (let i = 0; i < 30; i++) {
+      const markers = planElevatorShafts([towerB], createRng(`elevator-door-block-z-${i}`), new Set(), [bridge]);
+      expect(markers).toHaveLength(0);
+    }
+  });
+
+  it('never places an elevator whose fixed corner would block a bridge door on its own west wall (axis x, towerB)', () => {
+    const towerA = tower({ x: 0, z: 0, width: 12, depth: 12, height: 60 });
+    const towerB = tower({ x: 30, z: 0, width: 12, depth: 12, height: 60 });
+    const bridge = bridgeAt(towerA, towerB, 'x', 2);
+    for (let i = 0; i < 30; i++) {
+      const markers = planElevatorShafts([towerB], createRng(`elevator-door-block-x-${i}`), new Set(), [bridge]);
+      expect(markers).toHaveLength(0);
+    }
+  });
+
+  it('still allows an elevator when the bridge door offset clears the elevator range entirely', () => {
+    const towerA = tower({ x: 0, z: 0, width: 12, depth: 12, height: 60 });
+    const towerB = tower({ x: 0, z: 30, width: 12, depth: 12, height: 60 });
+    // Offset 6 is well past the elevator's [1,3] range on a 12-wide tower.
+    const bridge = bridgeAt(towerA, towerB, 'z', 6);
+    let found = false;
+    for (let i = 0; i < 30 && !found; i++) {
+      const markers = planElevatorShafts([towerB], createRng(`elevator-door-clear-${i}`), new Set(), [bridge]);
+      if (markers.length > 0) found = true;
+    }
+    expect(found).toBe(true);
+  });
+
+  it('never restricts towerA (the far-wall side of the bridge) — only towerB is ever at risk', () => {
+    const towerA = tower({ x: 0, z: 0, width: 12, depth: 12, height: 60 });
+    const towerB = tower({ x: 0, z: 30, width: 12, depth: 12, height: 60 });
+    const bridge = bridgeAt(towerA, towerB, 'z', 2); // blocks towerB, irrelevant to towerA's own far (south) wall
+    let found = false;
+    for (let i = 0; i < 30 && !found; i++) {
+      const markers = planElevatorShafts([towerA], createRng(`elevator-towerA-unaffected-${i}`), new Set(), [bridge]);
+      if (markers.length > 0) found = true;
+    }
+    expect(found).toBe(true);
+  });
+
+  it('revert-probe: without the bridges argument (the pre-fix call shape), the blocking elevator is placed again', () => {
+    const towerB = tower({ x: 0, z: 30, width: 12, depth: 12, height: 60 });
+    let found = false;
+    for (let i = 0; i < 30 && !found; i++) {
+      // Same rng draws as the blocked case above, but `bridges` omitted entirely -- proves the gate, not the rng roll, is what suppresses the marker.
+      const markers = planElevatorShafts([towerB], createRng(`elevator-door-block-z-${i}`), new Set());
+      if (markers.length > 0) found = true;
+    }
+    expect(found).toBe(true);
+  });
 });
 
 describe('parks ground materials smoke test (shared block ids)', () => {

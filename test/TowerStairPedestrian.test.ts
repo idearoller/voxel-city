@@ -177,7 +177,7 @@ describe('buildNavGrid tower-stair links (real generator output)', () => {
     return visited;
   }
 
-  it("every tower lobby's floor component reaches its own bridge span (a review sweep against an earlier, citywide-shared flood budget found ~11/24-18/24 stair tops per seed dead-ending in a truncated, walled-off lobby with no path to the bridge -- see MAX_LOBBY_FLOOD_CELLS_PER_TOWER's doc comment)", () => {
+  it("every tower lobby's floor component reaches its own bridge span (a review sweep against an earlier, citywide-shared flood budget found ~11/24-18/24 stair tops per seed dead-ending in a truncated, walled-off lobby with no path to the bridge -- see MAX_LOBBY_FLOOD_CELLS_PER_TOWER's doc comment; a second, later defect found the same symptom on ~1 stair top per seed even after that fix -- see this test's closing comment and `canElevatorAndBridgeDoorCoexist`'s doc comment in infrastructure.ts)", () => {
     const seeds = Array.from({ length: 24 }, (_, i) => `bridge-reach-${i}`);
     let totalLobbyComponents = 0;
     let reachedBridge = 0;
@@ -227,12 +227,22 @@ describe('buildNavGrid tower-stair links (real generator output)', () => {
     }
 
     expect(totalLobbyComponents).toBeGreaterThan(0);
-    // Sam's review convention: residual non-reaching components (~1 per
-    // seed) can be genuine geometry (e.g. a lobby with a bridge door that
-    // itself sits right at the flood's exclusion boundary) and are out of
-    // scope -- the invariant this guards is "effectively all of them", not
-    // literally every single one, so the truncation regression (roughly
-    // half failing) can never silently creep back in.
+    // The dominant ~1-per-seed residual class was root-caused and eliminated:
+    // an elevator shaft's fixed NW-corner footprint could sit directly on a
+    // bridge door's own approach corridor (the door is always carved into
+    // `bridge.towerB`'s north or west wall, the two walls nearest that fixed
+    // corner), silently walling the lobby off from its own bridge with every
+    // individual voxel well-formed. Fixed by `canElevatorAndBridgeDoorCoexist`
+    // (infrastructure.ts), a coexistence gate on `planElevatorShafts` parallel
+    // to the existing `canElevatorAndStairShaftCoexist` one, but versus the
+    // door's transverse offset rather than the centered stair shaft --
+    // verified across 106+30 seeds with bridge counts unchanged seed-for-seed
+    // and only the specific blocking elevators dropped. The threshold stays
+    // >= 0.95 rather than exact 1.0 because a rarer, DISTINCT class remains:
+    // two bridges meeting a tower at the same level can cross such that one
+    // bridge's neon rail rows seal the other's door lane (seen once in a
+    // 30-seed review sweep, `sam-audit-3` y=30) -- a planBridges deconfliction
+    // problem, tracked separately from the elevator gate.
     expect(reachedBridge / totalLobbyComponents).toBeGreaterThanOrEqual(0.95);
   });
 });
