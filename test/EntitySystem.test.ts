@@ -170,4 +170,98 @@ describe('EntitySystem', () => {
     );
     expect(flyingVehicleBody).toBeUndefined();
   });
+
+  describe('getFlyerAudioStates', () => {
+    function buildFlyingVehicleSystem(scene: THREE.Scene): EntitySystem {
+      return new EntitySystem(scene, {
+        maxPedestrians: 0,
+        maxVehicles: 0,
+        maxFlyingVehicles: 6,
+        pedestrianSpeedRange: [1, 1],
+        vehicleSpeedRange: [1, 1],
+        flyingVehicleSpeedRange: [15, 15],
+        spawnMinRadius: 1,
+        spawnMaxRadius: 100,
+        despawnRadius: 300,
+      });
+    }
+
+    it('fills one relative-state record per live flying vehicle, positioned relative to the given camera', () => {
+      const world = new World();
+      paintMajorAvenue(world, Math.floor(WORLD_SIZE_X / 2));
+      const scene = new THREE.Scene();
+      const system = buildFlyingVehicleSystem(scene);
+
+      const playerX = Math.floor(WORLD_SIZE_X / 2);
+      const playerZ = Math.floor(WORLD_SIZE_Z / 2);
+      system.rebuild(world, GROUND_Y, 'audio-states-test');
+      for (let i = 0; i < 600; i++) system.update(1 / 60, playerX, GROUND_Y, playerZ);
+
+      const out: { dx: number; dy: number; dz: number; vx: number; vz: number }[] = [];
+      const cameraX = playerX + 1;
+      const cameraY = 50;
+      const cameraZ = playerZ + 2;
+      system.getFlyerAudioStates(cameraX, cameraY, cameraZ, out);
+
+      expect(out.length).toBeGreaterThan(0);
+      for (const state of out) {
+        // Sky lanes sit well above GROUND_Y -- the relative dy should
+        // reflect real altitude, not a stray zero.
+        expect(state.dy).toBeGreaterThan(0);
+        // Every spawned flyer here cruises at exactly 15 -- exactly one of
+        // vx/vz should carry that magnitude (fixed axis-aligned heading).
+        expect(Math.hypot(state.vx, state.vz)).toBeCloseTo(15);
+      }
+    });
+
+    it('reuses previously-filled records across calls instead of allocating new ones', () => {
+      const world = new World();
+      paintMajorAvenue(world, Math.floor(WORLD_SIZE_X / 2));
+      const scene = new THREE.Scene();
+      const system = buildFlyingVehicleSystem(scene);
+
+      const playerX = Math.floor(WORLD_SIZE_X / 2);
+      const playerZ = Math.floor(WORLD_SIZE_Z / 2);
+      system.rebuild(world, GROUND_Y, 'audio-states-reuse-test');
+      for (let i = 0; i < 600; i++) system.update(1 / 60, playerX, GROUND_Y, playerZ);
+
+      const out: { dx: number; dy: number; dz: number; vx: number; vz: number }[] = [];
+      system.getFlyerAudioStates(playerX, GROUND_Y, playerZ, out);
+      expect(out.length).toBeGreaterThan(0);
+      const firstRecord = out[0];
+
+      system.update(1 / 60, playerX, GROUND_Y, playerZ);
+      system.getFlyerAudioStates(playerX, GROUND_Y, playerZ, out);
+      expect(out[0]).toBe(firstRecord); // same object, fields mutated in place
+    });
+
+    it('truncates to the live flyer count when the population shrinks', () => {
+      const world = new World();
+      paintMajorAvenue(world, Math.floor(WORLD_SIZE_X / 2));
+      const scene = new THREE.Scene();
+      const system = buildFlyingVehicleSystem(scene);
+
+      const playerX = Math.floor(WORLD_SIZE_X / 2);
+      const playerZ = Math.floor(WORLD_SIZE_Z / 2);
+      system.rebuild(world, GROUND_Y, 'audio-states-shrink-test');
+      for (let i = 0; i < 600; i++) system.update(1 / 60, playerX, GROUND_Y, playerZ);
+
+      const out: { dx: number; dy: number; dz: number; vx: number; vz: number }[] = [];
+      system.getFlyerAudioStates(playerX, GROUND_Y, playerZ, out);
+      expect(out.length).toBeGreaterThan(0);
+
+      // Rebuilding into an empty world clears every flying vehicle.
+      system.rebuild(new World(), GROUND_Y, 'audio-states-shrink-after');
+      system.getFlyerAudioStates(playerX, GROUND_Y, playerZ, out);
+      expect(out.length).toBe(0);
+    });
+
+    it('reports no flyers before rebuild() has ever been called', () => {
+      const scene = new THREE.Scene();
+      const system = buildFlyingVehicleSystem(scene);
+      const out: { dx: number; dy: number; dz: number; vx: number; vz: number }[] = [];
+      system.getFlyerAudioStates(0, 0, 0, out);
+      expect(out.length).toBe(0);
+    });
+  });
 });

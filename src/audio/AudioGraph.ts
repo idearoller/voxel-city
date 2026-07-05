@@ -63,8 +63,8 @@ export interface AmbientGraph {
   dispose(): void;
 }
 
-/** Fills a mono buffer with uniform white noise in [-1, 1) -- the shared raw material for both the rain and traffic beds (each gets its own buffer/source so they can be filtered independently). */
-function createNoiseBuffer(ctx: AudioContextLike, seconds: number) {
+/** Fills a mono buffer with uniform white noise in [-1, 1) -- the shared raw material for the rain/traffic beds and the flyby voice pool (`FlybyGraph.ts`), each with its own buffer/source so they can be filtered independently. */
+export function createNoiseBuffer(ctx: AudioContextLike, seconds: number) {
   const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
   const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
   const data = buffer.getChannelData(0);

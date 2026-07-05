@@ -17,6 +17,7 @@ import type {
   DynamicsCompressorNodeLike,
   GainNodeLike,
   OscillatorNodeLike,
+  StereoPannerNodeLike,
 } from '../../src/audio/types';
 
 export class FakeAudioParam implements AudioParamLike {
@@ -106,6 +107,10 @@ export class FakeDynamicsCompressorNode extends FakeNode implements DynamicsComp
   readonly ratio = new FakeAudioParam();
 }
 
+export class FakeStereoPannerNode extends FakeNode implements StereoPannerNodeLike {
+  readonly pan = new FakeAudioParam();
+}
+
 export class FakeAudioContext implements AudioContextLike {
   currentTime = 0;
   sampleRate = 44100;
@@ -121,6 +126,7 @@ export class FakeAudioContext implements AudioContextLike {
   readonly oscillators: FakeOscillatorNode[] = [];
   readonly bufferSources: FakeBufferSourceNode[] = [];
   readonly compressors: FakeDynamicsCompressorNode[] = [];
+  readonly stereoPanners: FakeStereoPannerNode[] = [];
 
   createGain(): GainNodeLike {
     const node = new FakeGainNode();
@@ -153,6 +159,12 @@ export class FakeAudioContext implements AudioContextLike {
   createDynamicsCompressor(): DynamicsCompressorNodeLike {
     const node = new FakeDynamicsCompressorNode();
     this.compressors.push(node);
+    return node;
+  }
+
+  createStereoPanner(): StereoPannerNodeLike {
+    const node = new FakeStereoPannerNode();
+    this.stereoPanners.push(node);
     return node;
   }
 

@@ -41,6 +41,10 @@ import { deriveSkyLanes } from './SkyLane';
 import { EntityRenderer } from '../engine/EntityRenderer';
 import { WORLD_SIZE_X, WORLD_SIZE_Z } from '../world/coords';
 import type { World } from '../world/World';
+// Type-only: `FlyerRelativeState` is a plain DTO (see `audio/types.ts`'s doc
+// comment on it) -- this import carries no runtime WebAudio dependency, and
+// keeps the actual `FlyingVehicle` shape from ever leaking into `audio/`.
+import type { FlyerRelativeState } from '../audio/types';
 
 export class EntitySystem {
   private readonly simulation: EntitySimulation;
@@ -77,6 +81,36 @@ export class EntitySystem {
   update(dt: number, playerX: number, playerY: number, playerZ: number): void {
     this.elapsedTime += dt;
     this.simulation.update(dt, playerX, playerY, playerZ);
+  }
+
+  /**
+   * Fills `out` with every live flying vehicle's position/velocity relative
+   * to (`cameraX`, `cameraY`, `cameraZ`), for the positional flyby audio
+   * effect (see `audio/flyby.ts`) -- this is the one place `FlyingVehicle`'s
+   * shape gets converted to the plain `FlyerRelativeState` DTO `audio/` is
+   * allowed to know about. Reuses whatever objects are already sitting in
+   * `out` from a previous call (mutating their fields in place) rather than
+   * allocating a fresh record per flyer per frame; only grows `out` the
+   * first time the live flyer count exceeds its previous length.
+   * `vy` is omitted -- flying vehicles hold a fixed altitude for their whole
+   * lifetime (see `FlyingVehicle.y`), so vertical closing speed is always 0.
+   */
+  getFlyerAudioStates(cameraX: number, cameraY: number, cameraZ: number, out: FlyerRelativeState[]): void {
+    const flyers = this.simulation.flyingVehicleList;
+    for (let i = 0; i < flyers.length; i++) {
+      const flyer = flyers[i]!;
+      let state = out[i];
+      if (!state) {
+        state = { dx: 0, dy: 0, dz: 0, vx: 0, vz: 0 };
+        out[i] = state;
+      }
+      state.dx = flyer.x - cameraX;
+      state.dy = flyer.y - cameraY;
+      state.dz = flyer.z - cameraZ;
+      state.vx = flyer.dirX * flyer.speed;
+      state.vz = flyer.dirZ * flyer.speed;
+    }
+    out.length = flyers.length;
   }
 
   /** Per-animation-frame sync of instanced mesh matrices from current simulation state. */

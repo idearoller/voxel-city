@@ -74,6 +74,26 @@ describe('AudioSystem', () => {
     });
   });
 
+  describe('updateFlybys', () => {
+    it('is a no-op before unlock()', () => {
+      expect(() => system.updateFlybys([{ dx: 5, dy: 0, dz: 0, vx: -1, vz: 0 }], { x: 1, z: 0 })).not.toThrow();
+      expect(ctx.gainNodes).toHaveLength(0);
+    });
+
+    it('drives a voice gain after unlock() when a flyer is within range', () => {
+      system.unlock();
+      system.updateFlybys([{ dx: 5, dy: 0, dz: 0, vx: -10, vz: 0 }], { x: 1, z: 0 });
+
+      const drivenGains = ctx.gainNodes.filter((g) => g.gain.setTargetAtTimeCalls.some((v) => v > 0));
+      expect(drivenGains.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('is safe to call when WebAudio is unavailable', () => {
+      const silentSystem = new AudioSystem(() => null, new FakeStorage());
+      expect(() => silentSystem.updateFlybys([], { x: 1, z: 0 })).not.toThrow();
+    });
+  });
+
   describe('mute', () => {
     it('starts unmuted by default', () => {
       expect(system.isMuted).toBe(false);
@@ -158,6 +178,14 @@ describe('AudioSystem', () => {
       system.unlock();
       system.dispose();
       expect(ctx.closeCount).toBe(1);
+    });
+
+    it('also disposes the flyby voice pool (stops every voice noise source)', () => {
+      system.unlock();
+      system.dispose();
+      for (const source of ctx.bufferSources) {
+        expect(source.stopCount).toBe(1);
+      }
     });
 
     it('is safe to call before unlock()', () => {

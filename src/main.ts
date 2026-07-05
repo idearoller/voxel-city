@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { AudioSystem, type AudioContextFactory } from './audio/AudioSystem';
+import type { FlyerRelativeState } from './audio/types';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
 import { ExclusiveGate } from './engine/ExclusiveGate';
@@ -459,6 +460,18 @@ void generationGate.run(() => runGeneration(DEFAULT_SEED));
 
 let elapsedTime = 0;
 
+// Reused every tick by the flyby-audio data flow below so a frame with N
+// nearby flying vehicles costs N field writes, not N object allocations
+// (see `EntitySystem.getFlyerAudioStates`'s doc comment).
+const nearbyFlyerScratch: FlyerRelativeState[] = [];
+// Local +X rotated by the camera's current orientation -- its world-space
+// "right" axis. Read from `camera.quaternion` (set directly each tick by
+// `LookControls`) rather than `camera.matrixWorld`, which Three.js only
+// refreshes during the render pass and would otherwise be one frame stale
+// here in the update pass.
+const RIGHT_AXIS = new THREE.Vector3(1, 0, 0);
+const cameraRightScratch = new THREE.Vector3();
+
 engine.start({
   update: (dt) => {
     elapsedTime += dt;
@@ -475,6 +488,20 @@ engine.start({
       rainIntensity: rain.enabled ? rain.intensity : 0,
       isPlayMode: modeManager.currentMode === 'play',
     });
+
+    // Positional hover-car flyby: EntitySystem converts live flying
+    // vehicles to plain camera-relative data (never leaking `FlyingVehicle`
+    // into `audio/`); only main.ts touches Three.js camera internals, so it
+    // derives the world-space right axis `audio/flyby.ts` needs for stereo
+    // pan and hands over just those two numbers.
+    entitySystem.getFlyerAudioStates(
+      engine.camera.position.x,
+      engine.camera.position.y,
+      engine.camera.position.z,
+      nearbyFlyerScratch,
+    );
+    cameraRightScratch.copy(RIGHT_AXIS).applyQuaternion(engine.camera.quaternion);
+    audioSystem.updateFlybys(nearbyFlyerScratch, { x: cameraRightScratch.x, z: cameraRightScratch.z });
   },
   render: () => {
     // Chunk rebuilds are budgeted per animation frame (not per fixed tick):

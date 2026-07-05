@@ -67,6 +67,11 @@ export interface DynamicsCompressorNodeLike extends AudioNodeLike {
   readonly ratio: AudioParamLike;
 }
 
+/** Equal-power stereo positioning node — used only by the flyby voice pool (see `FlybyGraph.ts`); the ambient beds are mono/non-positional and never touch this. */
+export interface StereoPannerNodeLike extends AudioNodeLike {
+  readonly pan: AudioParamLike;
+}
+
 export interface AudioContextLike {
   readonly currentTime: number;
   readonly sampleRate: number;
@@ -79,6 +84,7 @@ export interface AudioContextLike {
   createBuffer(numberOfChannels: number, length: number, sampleRate: number): AudioBufferLike;
   createBufferSource(): AudioBufferSourceNodeLike;
   createDynamicsCompressor(): DynamicsCompressorNodeLike;
+  createStereoPanner(): StereoPannerNodeLike;
   resume(): Promise<void>;
   suspend(): Promise<void>;
   close(): Promise<void>;
@@ -88,4 +94,34 @@ export interface AudioContextLike {
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+}
+
+/**
+ * Plain per-flyer DTO for the positional flyby effect (see `flyby.ts`) —
+ * position/velocity of one flying vehicle *relative to the listener*,
+ * world-space meters and meters/second. Deliberately just five numbers, not
+ * an entity reference: `audio/` must never import `entities/` (the ambient
+ * system's whole narrow-interface discipline extends to this), so whichever
+ * side owns the entity data (currently `EntitySystem`) converts to this
+ * shape before handing it across the boundary. `dy`/no `vy` because flying
+ * vehicles hold a fixed altitude for their whole lifetime (see
+ * `FlyingVehicle.y`) — vertical closing speed is always zero.
+ */
+export interface FlyerRelativeState {
+  dx: number;
+  dy: number;
+  dz: number;
+  vx: number;
+  vz: number;
+}
+
+/**
+ * The listener's (camera's) world-space horizontal "right" axis, as plain
+ * numbers — the only camera-orientation fact the flyby pan computation
+ * needs. Computed in `main.ts` (the only place that touches Three.js
+ * camera matrices) so `audio/` never depends on a 3D engine type either.
+ */
+export interface ListenerRight {
+  x: number;
+  z: number;
 }

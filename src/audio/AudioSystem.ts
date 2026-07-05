@@ -11,7 +11,13 @@
  *  - `computeAmbientMix` (mix.ts): pure timeOfDay/rain/mode -> gain curve.
  *  - `MutePreference`: pure localStorage-backed boolean.
  *  - `buildAmbientGraph` (AudioGraph.ts): the actual WebAudio node graph.
- * `AudioSystem` just wires those three together against a real (or, in
+ *  - `FlybyVoicePool` (FlybyGraph.ts): the positional hover-car flyby voice
+ *    pool, layered on top of the ambient beds via `updateFlybys()` — a
+ *    separate per-tick entry point from `update()` since it carries
+ *    per-entity data (`FlyerRelativeState[]`) rather than the single global
+ *    `AmbientState`, but it shares this same graph/lifecycle: built in
+ *    `unlock()`, feeding into the same `masterGain`, torn down in `dispose()`.
+ * `AudioSystem` just wires those four together against a real (or, in
  * tests, fake) `AudioContextLike` and reacts to tab-visibility changes.
  *
  * Degrades silently everywhere: if `createContext()` returns null (WebAudio
@@ -22,8 +28,9 @@
 
 import { computeAmbientMix, type AmbientState } from './mix';
 import { MutePreference } from './MutePreference';
-import type { AudioContextLike, StorageLike } from './types';
+import type { AudioContextLike, FlyerRelativeState, ListenerRight, StorageLike } from './types';
 import { buildAmbientGraph, type AmbientGraph } from './AudioGraph';
+import { FlybyVoicePool } from './FlybyGraph';
 
 /** Seconds for `setTargetAtTime`'s exponential approach — smooths mix changes (rain toggling, day/night drift) without audible zipper noise, while still settling within a couple of seconds. */
 const MIX_RAMP_TIME_CONSTANT = 1.2;
@@ -36,6 +43,7 @@ export type AudioContextFactory = () => AudioContextLike | null;
 export class AudioSystem {
   private ctx: AudioContextLike | null = null;
   private graph: AmbientGraph | null = null;
+  private flybyPool: FlybyVoicePool | null = null;
   private unlockedFlag = false;
   private hidden = false;
   private readonly mutePreference: MutePreference;
@@ -67,6 +75,7 @@ export class AudioSystem {
     this.unlockedFlag = true;
     this.ctx = ctx;
     this.graph = buildAmbientGraph(ctx);
+    this.flybyPool = new FlybyVoicePool(ctx, this.graph.masterGain);
     // Resume is owned by applySuspendState (a fresh context reports
     // 'suspended', so the unmuted-visible path resumes it here). An
     // unconditional resume() would race its own async resolution against
@@ -102,6 +111,18 @@ export class AudioSystem {
   }
 
   /**
+   * Per-tick positional flyby update: `flyers` is whatever nearby flying
+   * vehicles' relative position/velocity `main.ts` currently has on hand
+   * (see `EntitySystem.getFlyerAudioStates`), `listenerRight` the camera's
+   * current world-space right axis. No-op before `unlock()`, same as
+   * `update()` — main.ts is expected to call this every tick regardless.
+   */
+  updateFlybys(flyers: readonly FlyerRelativeState[], listenerRight: ListenerRight): void {
+    if (!this.ctx || !this.flybyPool) return;
+    this.flybyPool.update(flyers, listenerRight, this.ctx.currentTime);
+  }
+
+  /**
    * Muting cuts to silence immediately (there's nothing to hear either way
    * once `applySuspendState` suspends the context right after), while
    * unmuting ramps back up so the ambient bed doesn't pop in at full level.
@@ -127,6 +148,7 @@ export class AudioSystem {
 
   dispose(): void {
     this.graph?.dispose();
+    this.flybyPool?.dispose();
     void this.ctx?.close();
   }
 }
