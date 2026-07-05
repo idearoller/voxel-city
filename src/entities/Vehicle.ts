@@ -42,6 +42,27 @@ export interface Vehicle {
   readonly cruiseSpeed: number;
   /** False once the vehicle has driven off the road network (dead end / map edge) — the simulation removes it next tick. */
   alive: boolean;
+
+  /**
+   * Follow-spacing bookkeeping, both private to `applyVehicleFollowSpacing`
+   * (never read or written anywhere else). `prevLeader` is whichever
+   * vehicle this one was following as of the end of the previous tick's
+   * follow-spacing pass — comparing it against this tick's leader (by
+   * object identity) is how that function tells a "birth" intrusion (this
+   * exact leader/follower pairing didn't exist a moment ago — a turn just
+   * joined a lane, or a different vehicle just became the nearer leader)
+   * from a genuine same-lane overshoot (the *same* pairing was already
+   * there last tick, so physics let the gap close past the floor despite
+   * the speed ramp). `intrusionGap` is set while easing out of a birth
+   * intrusion: the most recently accepted gap to the *current* leader,
+   * which the next tick's clamp may only enforce as a monotonic no-shrink
+   * floor while the leader stays the same — a leader swap always re-tags
+   * against the new leader from scratch rather than reusing the stale
+   * value, so a recovering vehicle can never be clamped against a leader it
+   * was never actually measured against.
+   */
+  prevLeader?: Vehicle;
+  intrusionGap?: number;
 }
 
 const ARRIVE_EPS = 0.02;
@@ -222,11 +243,11 @@ function setTravelPos(vehicle: Vehicle, pos: number): void {
  * vehicle has already been stepped by `stepVehicle`. For each vehicle with
  * one directly ahead of it in the same lane (see `laneKey`), this:
  *
- * 1. Hard-clamps its position so it's never closer than
- *    `VEHICLE_MIN_SEPARATION` from the leader — an absolute floor, not just
- *    a speed suggestion, so two vehicles can never overlap regardless of
- *    how they got close (a sudden lane join at a turn, a leader braking
- *    harder than this tick's `VEHICLE_MAX_ACCEL` can react to, etc).
+ * 1. Enforces `VEHICLE_MIN_SEPARATION` from the leader as an absolute floor,
+ *    not just a speed suggestion — but *how* it enforces it depends on
+ *    whether this leader/follower pairing already existed last tick (see
+ *    below), so a real invariant violation and a one-off "just joined this
+ *    lane already close by" birth condition are corrected differently.
  * 2. Eases `speed` toward the leader's speed (capped at this vehicle's own
  *    `cruiseSpeed`) once the gap closes inside `VEHICLE_FOLLOW_DISTANCE`,
  *    and back toward `cruiseSpeed` once the gap opens back up — smoothed by
@@ -236,6 +257,37 @@ function setTravelPos(vehicle: Vehicle, pos: number): void {
  * follower's clamp always measures against its leader's *final* corrected
  * position for this tick — correctness cascades down a stopped queue
  * instead of each vehicle only reacting to last tick's stale gap.
+ *
+ * **Birth intrusions.** A vehicle can end up owing its current gap to a
+ * leader it had no relationship with a moment ago in two ways: it just
+ * joined this lane itself (turning at an intersection, or `pickStableLane`'s
+ * sideways snap), or a *different* vehicle just joined the lane between it
+ * and its previous leader (e.g. a third vehicle turns in and becomes the new
+ * nearer leader). Either way, landing inside `VEHICLE_MIN_SEPARATION` of
+ * that leader isn't a physics overshoot to punish, it's just where the world
+ * put the pairing. Hard-clamping that back to the boundary, as this function
+ * used to unconditionally do, reads as the vehicle teleporting backward.
+ * Instead, any pairing that's new this tick (`vehicle.prevLeader` differs
+ * from this tick's leader — checked by object identity, so a leader swap is
+ * caught even when the vehicle itself stayed in the same lane) that starts
+ * inside `VEHICLE_MIN_SEPARATION` is (re-)tagged via `vehicle.intrusionGap`
+ * instead of clamped: `followTargetSpeed` already forces its target speed to
+ * 0 whenever the gap is at/under the floor, so the vehicle brakes (at the
+ * normal, kinematically-limited `VEHICLE_MAX_ACCEL` rate) until the leader
+ * pulls away and the gap reopens. Only once a pairing has survived unchanged
+ * from one tick to the next does the *monotonic* no-shrink correction apply:
+ * the gap may never shrink further than the last tick's accepted value
+ * against that same leader, clamping at most by that tick's own small excess
+ * motion — nowhere near a full `VEHICLE_MIN_SEPARATION`-sized jump. (A stale
+ * `intrusionGap` from a leader that's since changed is never enforced
+ * against the new leader — that would reintroduce the exact backward
+ * teleport this carve-out exists to remove.) The tag clears the moment the
+ * gap clears the floor on its own. A pairing that was already established
+ * last tick, wasn't already tagged, and still closes past the floor this
+ * tick is a genuine overshoot (e.g. a leader braking harder than this
+ * vehicle's own `VEHICLE_MAX_ACCEL` could react to in time) and keeps the
+ * original hard, immediate clamp to `VEHICLE_MIN_SEPARATION` — the
+ * steady-state invariant is not weakened.
  */
 export function applyVehicleFollowSpacing(vehicles: readonly Vehicle[], dt: number): void {
   const members: LaneMember[] = vehicles.map((vehicle, index) => ({
@@ -247,18 +299,48 @@ export function applyVehicleFollowSpacing(vehicles: readonly Vehicle[], dt: numb
 
   for (const idx of order) {
     const vehicle = vehicles[idx] as Vehicle;
-    const leader = leaderIndex[idx] as number;
+    const leaderIdx = leaderIndex[idx] as number;
+    const leaderVehicle = leaderIdx === -1 ? undefined : (vehicles[leaderIdx] as Vehicle);
+    const isNewPairing = vehicle.prevLeader !== leaderVehicle;
+    vehicle.prevLeader = leaderVehicle;
 
-    if (leader === -1) {
+    if (!leaderVehicle) {
+      vehicle.intrusionGap = undefined;
       vehicle.speed = approachSpeed(vehicle.speed, vehicle.cruiseSpeed, maxDelta);
       continue;
     }
 
-    const leaderVehicle = vehicles[leader] as Vehicle;
     let gap = travelPos(leaderVehicle) - travelPos(vehicle);
+
     if (gap < VEHICLE_MIN_SEPARATION) {
-      setTravelPos(vehicle, travelPos(leaderVehicle) - VEHICLE_MIN_SEPARATION);
-      gap = VEHICLE_MIN_SEPARATION;
+      if (vehicle.intrusionGap !== undefined && !isNewPairing) {
+        // Still easing out of a birth intrusion against the *same* leader:
+        // accept any improvement, but never let the gap shrink below what
+        // was already accepted.
+        gap = Math.max(gap, vehicle.intrusionGap);
+        setTravelPos(vehicle, travelPos(leaderVehicle) - gap);
+        vehicle.intrusionGap = gap;
+      } else if (isNewPairing) {
+        // A fresh pairing arriving already inside the floor -- either this
+        // vehicle just joined the lane (a turn, or a pickStableLane sideways
+        // snap), or a different vehicle just became its leader (e.g. a
+        // third vehicle turned in between it and its previous leader). The
+        // leader identity changing mid-recovery must re-tag against the new
+        // leader rather than reuse the old (now-meaningless) intrusionGap --
+        // otherwise the stale floor gets enforced against a leader it was
+        // never measured against, teleporting the vehicle backward exactly
+        // as the birth-intrusion carve-out exists to prevent. Tag it and
+        // leave position untouched; braking (via followTargetSpeed below)
+        // closes the gap gradually instead.
+        vehicle.intrusionGap = gap;
+      } else {
+        // Same pairing as last tick, and not already tagged: a real
+        // overshoot, corrected immediately.
+        setTravelPos(vehicle, travelPos(leaderVehicle) - VEHICLE_MIN_SEPARATION);
+        gap = VEHICLE_MIN_SEPARATION;
+      }
+    } else {
+      vehicle.intrusionGap = undefined;
     }
 
     const target = followTargetSpeed(gap, vehicle.cruiseSpeed, leaderVehicle.speed, VEHICLE_MIN_SEPARATION, VEHICLE_FOLLOW_DISTANCE);

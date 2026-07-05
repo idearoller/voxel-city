@@ -228,12 +228,113 @@ function makePair(gap: number, leadSpeed: number, rearCruiseSpeed: number): { le
 }
 
 describe('applyVehicleFollowSpacing', () => {
-  it('never lets a same-lane follower closer than VEHICLE_MIN_SEPARATION to its leader, clamping position if physics already closed the gap too far', () => {
-    const { lead, rear } = makePair(VEHICLE_MIN_SEPARATION - 1, 8, 8);
+  it('hard-clamps an already-established pairing immediately when physics closes the gap past the floor (genuine overshoot)', () => {
+    // First call establishes lead as rear's leader (comfortably outside the
+    // floor) so the *second* call's gap violation is against a pairing that
+    // already existed -- the steady-state case, which must still snap
+    // straight to the floor with no tolerance (see this task's doc comment
+    // on applyVehicleFollowSpacing: a birth intrusion is the only case that
+    // eases instead of clamping).
+    const { lead, rear } = makePair(VEHICLE_FOLLOW_DISTANCE, 8, 8);
+    applyVehicleFollowSpacing([lead, rear], 1 / 60);
 
+    // Physics (e.g. the leader braking harder than VEHICLE_MAX_ACCEL could
+    // react to) closes the gap past the floor on some later tick.
+    rear.x = lead.x - (VEHICLE_MIN_SEPARATION - 1);
     applyVehicleFollowSpacing([lead, rear], 1 / 60);
 
     expect(lead.x - rear.x).toBeCloseTo(VEHICLE_MIN_SEPARATION, 10);
+  });
+
+  it('does not teleport a freshly-joined pairing that arrives already inside the floor -- tags it as a birth intrusion instead', () => {
+    // No prior call establishing this pairing: from applyVehicleFollowSpacing's
+    // point of view, this is exactly the "just turned into an already-occupied
+    // lane" scenario -- lead and rear have never been leader/follower before.
+    const { lead, rear } = makePair(VEHICLE_MIN_SEPARATION - 1, 8, 8);
+    const rearXBefore = rear.x;
+    const initialGap = lead.x - rear.x; // < VEHICLE_MIN_SEPARATION by construction
+
+    applyVehicleFollowSpacing([lead, rear], 1 / 60);
+
+    expect(rear.x).toBe(rearXBefore); // never moved -- no backward teleport
+    expect(rear.intrusionGap).toBeCloseTo(initialGap, 10);
+    expect(rear.speed).toBeLessThan(8); // braking toward 0, per followTargetSpeed at/under the floor
+  });
+
+  it('eases a birth intrusion open over several ticks: the gap never shrinks further and fully recovers, all via normal braking/pull-away motion (no clamp-sized jumps)', () => {
+    const dt = 1 / 60;
+    const { lead, rear } = makePair(VEHICLE_MIN_SEPARATION - 1.5, 10, 8); // lead faster, so it pulls away once rear brakes off
+    const vehicles = [lead, rear];
+
+    let prevGap = lead.x - rear.x;
+    let maxBackwardStep = 0;
+    let ticksInIntrusion = 0;
+    let recovered = false;
+
+    for (let tick = 0; tick < 300 && !recovered; tick++) {
+      const rearXBefore = rear.x;
+      // Same per-tick order as EntitySimulation.update: step first (using
+      // each vehicle's speed from the end of the previous tick), then
+      // follow-spacing corrects position/speed for the next tick.
+      lead.x += lead.speed * dt;
+      rear.x += rear.speed * dt;
+      applyVehicleFollowSpacing(vehicles, dt);
+
+      const backwardStep = rearXBefore - rear.x;
+      if (backwardStep > maxBackwardStep) maxBackwardStep = backwardStep;
+
+      const gap = lead.x - rear.x;
+      if (gap < VEHICLE_MIN_SEPARATION) {
+        ticksInIntrusion++;
+        expect(gap).toBeGreaterThanOrEqual(prevGap - 1e-9); // monotonic: never shrinks further
+        expect(rear.intrusionGap).toBeDefined();
+      } else {
+        recovered = true;
+      }
+      prevGap = gap;
+    }
+
+    expect(recovered).toBe(true); // actually cleared the floor, not stuck forever
+    expect(ticksInIntrusion).toBeGreaterThan(0); // exercised real easing, not an instant no-op
+    expect(ticksInIntrusion).toBeLessThan(300); // bounded recovery, not a slow-motion permanent intrusion
+    expect(maxBackwardStep).toBeLessThan(0.05); // nowhere near a VEHICLE_MIN_SEPARATION-sized (4) jump
+    expect(rear.intrusionGap).toBeUndefined(); // tag cleared once recovered
+  });
+
+  it('re-tags against a new leader instead of enforcing a stale intrusion floor when a third vehicle turns in mid-recovery', () => {
+    // Regression for a leader-swap-while-tagged bug: R is birth-tagged
+    // following A at gap 3.5 (< VEHICLE_MIN_SEPARATION). A beat later, B
+    // turns into the SAME lane between A and R, arriving only 2.0 ahead of
+    // R -- closer than R's stale 3.5 floor. If the monotonic no-shrink
+    // branch fired here (comparing against the OLD floor rather than
+    // re-tagging against the NEW leader B), it would clamp R backward by up
+    // to 1.5 units in one tick -- exactly the teleport this carve-out
+    // exists to remove, just relocated to a leader swap instead of a turn.
+    const dt = 1 / 60;
+
+    const A = createVehicleAt(20, 5, 8);
+    A.dirX = 1;
+    const R = createVehicleAt(20, 5, 8);
+    R.dirX = 1;
+    R.x = 0;
+    A.x = R.x + 3.5;
+
+    // Tick 1: R joins A's lane already 3.5 inside the floor -- birth intrusion, tagged not clamped.
+    applyVehicleFollowSpacing([A, R], dt);
+    expect(R.intrusionGap).toBeCloseTo(3.5, 10);
+    expect(R.x).toBe(0);
+
+    // Tick 2: B turns in between A and R, becoming R's new, nearer leader.
+    const B = createVehicleAt(20, 5, 8);
+    B.dirX = 1;
+    B.x = R.x + 2.0;
+    const rearXBeforeSwap = R.x;
+
+    applyVehicleFollowSpacing([A, B, R], dt);
+
+    expect(R.x).toBe(rearXBeforeSwap); // no backward teleport
+    expect(R.intrusionGap).toBeCloseTo(2.0, 10); // re-tagged against B's actual gap, not clamped to the stale 3.5 floor
+    expect(R.prevLeader).toBe(B);
   });
 
   it('slows a follower toward the leader speed once the gap closes inside VEHICLE_FOLLOW_DISTANCE, without exceeding the leader', () => {
@@ -294,13 +395,22 @@ describe('applyVehicleFollowSpacing', () => {
     back.x = 20.5;
     const middle = createVehicleAt(20, 5, 8);
     middle.dirX = 1;
-    middle.x = 20.5 + (VEHICLE_MIN_SEPARATION - 1); // already too close to `back`
+    middle.x = 20.5 + VEHICLE_MIN_SEPARATION;
     const front = createVehicleAt(20, 5, 8);
     front.dirX = 1;
-    front.x = middle.x + (VEHICLE_MIN_SEPARATION - 1); // already too close to `middle`
+    front.x = middle.x + VEHICLE_MIN_SEPARATION;
     front.speed = 0; // stopped dead at the front of the queue
+    const queue = [back, middle, front];
 
-    applyVehicleFollowSpacing([back, middle, front], 1 / 60);
+    // Establish all three pairings at a compliant spacing first, so the
+    // follow-up violation below is against already-existing pairings (the
+    // steady-state case this test is actually about), not a birth intrusion.
+    applyVehicleFollowSpacing(queue, 1 / 60);
+
+    // Physics now closes both gaps past the floor on some later tick.
+    middle.x = back.x + (VEHICLE_MIN_SEPARATION - 1);
+    front.x = middle.x + (VEHICLE_MIN_SEPARATION - 1);
+    applyVehicleFollowSpacing(queue, 1 / 60);
 
     expect(front.x - middle.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-9);
     expect(middle.x - back.x).toBeGreaterThanOrEqual(VEHICLE_MIN_SEPARATION - 1e-9);

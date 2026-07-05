@@ -91,18 +91,93 @@ function assertNoLaneOverlap<T>(
   }
 }
 
+/** Ticks a same-lane, birth-tagged intrusion is allowed to persist before this soak treats it as a stuck (not just easing) hole in the invariant -- generous relative to the ~63-tick max actually observed in a 6-seed sweep, so it only ever fires on a genuine regression. */
+const MAX_INTRUSION_TICKS = 150;
+
+/**
+ * Ground-vehicle lane-spacing check, aware of `applyVehicleFollowSpacing`'s
+ * birth-intrusion carve-out: a same-lane pair closer than
+ * `VEHICLE_MIN_SEPARATION` is only ever tolerated while the trailing vehicle
+ * is precisely tagged (`intrusionGap !== undefined`) -- anything else is a
+ * genuine invariant break, exactly as strict as the pre-carve-out check.
+ *
+ * The monotonic no-shrink contract only ever applies to a *specific*
+ * (rear, leader) pairing -- per `applyVehicleFollowSpacing`'s doc comment, a
+ * leader swap mid-recovery re-tags from scratch rather than reusing the
+ * stale gap. So `intrusionTracking` is keyed by rear vehicle but carries the
+ * leader it was last checked against: a different leader this tick resets
+ * the tracked gap/ticks instead of comparing across the swap (which would
+ * either false-fail on a legitimate re-tag's smaller gap, or -- worse --
+ * silently accept a real backward teleport by asserting monotonicity against
+ * the wrong leader). Every tracked intrusion must still clear the floor
+ * again within `MAX_INTRUSION_TICKS`, so the carve-out can never quietly
+ * become a permanent, silent hole. Recovered vehicles push their total
+ * tagged duration onto `recoveryTicks`, for this suite's reported
+ * distribution.
+ */
+function assertGroundLaneSpacing(
+  vehicles: readonly Vehicle[],
+  intrusionTracking: Map<Vehicle, { leader: Vehicle; gap: number; ticks: number }>,
+  recoveryTicks: number[],
+): void {
+  const lanes = new Map<string, number[]>();
+  vehicles.forEach((v, i) => {
+    const key = groundLaneKey(v);
+    if (key === null) return;
+    let indices = lanes.get(key);
+    if (!indices) {
+      indices = [];
+      lanes.set(key, indices);
+    }
+    indices.push(i);
+  });
+
+  for (const indices of lanes.values()) {
+    indices.sort((a, b) => groundTravelPos(vehicles[a] as Vehicle) - groundTravelPos(vehicles[b] as Vehicle));
+    for (let i = 1; i < indices.length; i++) {
+      const rear = vehicles[indices[i - 1] as number] as Vehicle;
+      const lead = vehicles[indices[i] as number] as Vehicle;
+      const gap = groundTravelPos(lead) - groundTravelPos(rear);
+
+      if (gap >= VEHICLE_MIN_SEPARATION - 1e-6) continue;
+
+      expect(rear.intrusionGap).toBeDefined();
+
+      const prior = intrusionTracking.get(rear);
+      if (prior && prior.leader === lead) {
+        expect(gap).toBeGreaterThanOrEqual(prior.gap - 1e-6); // monotonic: never shrinks further against the SAME leader
+        prior.gap = gap;
+        prior.ticks++;
+        expect(prior.ticks).toBeLessThanOrEqual(MAX_INTRUSION_TICKS); // never a permanent intrusion
+      } else {
+        // Either the first tick this rear is seen intruding, or its leader
+        // just changed (a re-tag) -- start fresh tracking against this leader.
+        intrusionTracking.set(rear, { leader: lead, gap, ticks: 1 });
+      }
+    }
+  }
+
+  // Anything no longer tagged (per the vehicle's own bookkeeping) has recovered -- record and stop tracking it.
+  for (const [vehicle, state] of intrusionTracking) {
+    if (vehicle.intrusionGap === undefined) {
+      recoveryTicks.push(state.ticks);
+      intrusionTracking.delete(vehicle);
+    }
+  }
+}
+
 describe('ground vehicle follow-spacing soak (real generated cities)', () => {
-  it('never overlaps a same-lane leader, never teleports, and keeps traffic flowing, across a sweep of seeds', () => {
-    // Worst-case bound, not just typical cruising displacement: ordinary
-    // movement contributes at most cruiseSpeed*dt, but a vehicle that just
-    // turned into a lane already occupied close by can also take a single
-    // hard-separation clamp correction (see `applyVehicleFollowSpacing`) of
-    // up to `VEHICLE_MIN_SEPARATION` in the very same tick. That sum is
-    // still a small, finite, structurally-justified number -- a real
-    // teleport bug (a vehicle jumping across the map) blows straight past
-    // it.
-    const maxPerTickDisplacement = GROUND_SOAK_CONFIG.vehicleSpeedRange[1] * DT + VEHICLE_MIN_SEPARATION;
+  it('never overlaps a same-lane leader outside a precisely-tagged, monotonically-recovering birth intrusion, never teleports, and keeps traffic flowing, across a sweep of seeds', () => {
+    // Worst-case bound is now just ordinary cruising displacement plus a
+    // small margin: `applyVehicleFollowSpacing`'s birth-intrusion carve-out
+    // (see its doc comment) replaced the old single-tick, up-to-
+    // VEHICLE_MIN_SEPARATION-sized hard clamp with a monotonic, kinematics-
+    // bounded correction, so a real teleport bug (a vehicle jumping across
+    // the map) still blows straight past this.
+    const maxPerTickDisplacement = GROUND_SOAK_CONFIG.vehicleSpeedRange[1] * DT * 2;
     let seedsChecked = 0;
+    let maxObservedDisplacement = 0;
+    const recoveryTicks: number[] = [];
 
     for (const seed of SEEDS) {
       const world = new World();
@@ -113,6 +188,7 @@ describe('ground vehicle follow-spacing soak (real generated cities)', () => {
 
       const sim = new EntitySimulation(GROUND_SOAK_CONFIG);
       sim.reset(grid, `${seed}-ground-sim`);
+      const intrusionTracking = new Map<Vehicle, { leader: Vehicle; gap: number; ticks: number }>();
 
       let speedSampleSum = 0;
       let speedSampleCount = 0;
@@ -128,9 +204,10 @@ describe('ground vehicle follow-spacing soak (real generated cities)', () => {
           if (!prev) continue; // spawned this tick -- nothing to compare against
           const displacement = Math.hypot(v.x - prev.x, v.z - prev.z);
           expect(displacement).toBeLessThanOrEqual(maxPerTickDisplacement);
+          if (displacement > maxObservedDisplacement) maxObservedDisplacement = displacement;
         }
 
-        assertNoLaneOverlap(sim.vehicleList, groundLaneKey, groundTravelPos, VEHICLE_MIN_SEPARATION);
+        assertGroundLaneSpacing(sim.vehicleList, intrusionTracking, recoveryTicks);
 
         maxPopulation = Math.max(maxPopulation, sim.vehicleList.length);
         if (tick >= SNAPSHOT_CUTOFF) {
@@ -148,10 +225,22 @@ describe('ground vehicle follow-spacing soak (real generated cities)', () => {
         // soak's back half must stay well above zero, i.e. never gridlocks.
         expect(avgSpeed).toBeGreaterThan(1);
       }
+
+      // Every intrusion still open at the end of this seed's run is, by
+      // construction, still within MAX_INTRUSION_TICKS (assertGroundLaneSpacing
+      // would already have failed otherwise) -- nothing further to assert
+      // here, but nothing needs to be force-flushed into recoveryTicks either.
     }
 
     // Neutralize check: fails if no seed ever produced any ground vehicles at all.
     expect(seedsChecked).toBeGreaterThan(0);
+    // Sanity on the carve-out itself: real generated-city traffic actually
+    // exercises birth intrusions (turns into an occupied lane happen), and
+    // every one of them recovers well within the generous cap.
+    expect(recoveryTicks.length).toBeGreaterThan(0);
+    for (const ticks of recoveryTicks) {
+      expect(ticks).toBeLessThan(MAX_INTRUSION_TICKS);
+    }
   });
 });
 

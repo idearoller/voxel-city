@@ -99,10 +99,23 @@ function setTravelPos(vehicle: FlyingVehicle, pos: number): void {
 /**
  * Same-lane follow-the-leader spacing for flying traffic — see
  * `applyVehicleFollowSpacing` in `Vehicle.ts` for the full behavioral
- * rationale (this mirrors it exactly, just with the flying-vehicle-specific
- * lane key, constants, and `x`/`z`/`speed` fields). Call once per tick,
- * after every flying vehicle has already been stepped by
- * `stepFlyingVehicle`.
+ * rationale (this mirrors its *hard*-clamp behavior exactly, just with the
+ * flying-vehicle-specific lane key, constants, and `x`/`z`/`speed` fields).
+ * Call once per tick, after every flying vehicle has already been stepped
+ * by `stepFlyingVehicle`.
+ *
+ * Deliberately NOT ported: `Vehicle.ts`'s birth-intrusion carve-out (see its
+ * doc comment). That exists because a *ground* vehicle can join a lane
+ * mid-flight, at a turn, right next to a leader it never had a relationship
+ * with a moment ago. A flying vehicle never turns (this module's doc
+ * comment) — the only way it ever joins a lane is at spawn, via
+ * `createFlyingVehicleOnLane`, and every spawn site already runs
+ * `isSpawnClearOfVehicles` against `FLYING_VEHICLE_MIN_SEPARATION` first
+ * (see `EntitySimulation.trySpawnFlyingVehicle`). Two vehicles sharing a
+ * lane key share the same cross-axis coordinate by construction, so that
+ * spawn-time straight-line check *is* the along-lane gap check for same-lane
+ * pairs — the birth-intrusion precondition this carve-out exists for can't
+ * arise here. Keeping the simpler hard clamp is correct, not an oversight.
  */
 export function applyFlyingVehicleFollowSpacing(vehicles: readonly FlyingVehicle[], dt: number): void {
   const members: LaneMember[] = vehicles.map((vehicle) => ({
