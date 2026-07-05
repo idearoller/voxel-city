@@ -90,6 +90,53 @@ describe('FlybyVoicePool', () => {
     }
   });
 
+  it('does not re-issue setTargetAtTime for a voice whose flyer state (and thus target) is unchanged tick to tick', () => {
+    const ctx = new FakeAudioContext();
+    const pool = new FlybyVoicePool(ctx, ctx.destination);
+    const state = flyer({ dx: 5, dz: 0, vx: -10 });
+
+    pool.update([state], { x: 1, z: 0 }, 0);
+    const callCountsAfterFirst = ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length);
+    const panCountsAfterFirst = ctx.stereoPanners.map((p) => p.pan.setTargetAtTimeCalls.length);
+
+    // Same flyer state (a fresh object with identical fields, not the same
+    // reference) on the next two ticks -- the computed target is identical,
+    // so no further ramp calls should be issued.
+    pool.update([flyer({ dx: 5, dz: 0, vx: -10 })], { x: 1, z: 0 }, 1);
+    pool.update([flyer({ dx: 5, dz: 0, vx: -10 })], { x: 1, z: 0 }, 2);
+
+    expect(ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length)).toEqual(callCountsAfterFirst);
+    expect(ctx.stereoPanners.map((p) => p.pan.setTargetAtTimeCalls.length)).toEqual(panCountsAfterFirst);
+  });
+
+  it('does re-issue setTargetAtTime once the flyer actually moves after a run of unchanged ticks', () => {
+    const ctx = new FakeAudioContext();
+    const pool = new FlybyVoicePool(ctx, ctx.destination);
+
+    pool.update([flyer({ dx: 5, dz: 0, vx: -10 })], { x: 1, z: 0 }, 0);
+    pool.update([flyer({ dx: 5, dz: 0, vx: -10 })], { x: 1, z: 0 }, 1);
+    const callsBeforeMove = ctx.gainNodes.reduce((sum, g) => sum + g.gain.setTargetAtTimeCalls.length, 0);
+
+    pool.update([flyer({ dx: 20, dz: 0, vx: -10 })], { x: 1, z: 0 }, 2); // much farther -- gain target changes
+    const callsAfterMove = ctx.gainNodes.reduce((sum, g) => sum + g.gain.setTargetAtTimeCalls.length, 0);
+
+    expect(callsAfterMove).toBeGreaterThan(callsBeforeMove);
+  });
+
+  it('a stale-then-repeated silence does not keep re-issuing the same silent target', () => {
+    const ctx = new FakeAudioContext();
+    const pool = new FlybyVoicePool(ctx, ctx.destination);
+
+    pool.update([flyer({ dx: 5 })], { x: 1, z: 0 }, 0);
+    pool.update([], { x: 1, z: 0 }, 1); // flyer leaves -- voice ramps to silence
+    const callCountsAfterSilence = ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length);
+
+    pool.update([], { x: 1, z: 0 }, 2);
+    pool.update([], { x: 1, z: 0 }, 3);
+
+    expect(ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length)).toEqual(callCountsAfterSilence);
+  });
+
   it('dispose() stops every noise source and disconnects every node exactly once', () => {
     const ctx = new FakeAudioContext();
     const pool = new FlybyVoicePool(ctx, ctx.destination);

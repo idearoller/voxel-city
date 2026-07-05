@@ -31,12 +31,15 @@ import { MutePreference } from './MutePreference';
 import type { AudioContextLike, FlyerRelativeState, ListenerRight, StorageLike } from './types';
 import { buildAmbientGraph, type AmbientGraph } from './AudioGraph';
 import { FlybyVoicePool } from './FlybyGraph';
+import { RampTargetCache } from './rampCache';
 
 /** Seconds for `setTargetAtTime`'s exponential approach — smooths mix changes (rain toggling, day/night drift) without audible zipper noise, while still settling within a couple of seconds. */
 const MIX_RAMP_TIME_CONSTANT = 1.2;
 /** Fade-in time constant when unmuting/unlocking — slightly slower than mix ramps so the ambient bed eases in rather than snapping to full presence. */
 const MASTER_RAMP_TIME_CONSTANT = 1.5;
 const MASTER_GAIN = 0.6;
+/** Gain values below this are indistinguishable in practice -- below `computeAmbientMix`'s own precision and far under audible level resolution -- so a re-issued `setTargetAtTime` this close to the last one is skipped (see `RampTargetCache`). */
+const GAIN_RAMP_EPSILON = 1e-4;
 
 export type AudioContextFactory = () => AudioContextLike | null;
 
@@ -47,6 +50,10 @@ export class AudioSystem {
   private unlockedFlag = false;
   private hidden = false;
   private readonly mutePreference: MutePreference;
+  /** Last-issued targets for the three bus gains `update()` ramps every tick — see `RampTargetCache`. */
+  private readonly rainGainCache = new RampTargetCache(GAIN_RAMP_EPSILON);
+  private readonly humGainCache = new RampTargetCache(GAIN_RAMP_EPSILON);
+  private readonly trafficGainCache = new RampTargetCache(GAIN_RAMP_EPSILON);
 
   constructor(
     private readonly createContext: AudioContextFactory,
@@ -105,9 +112,12 @@ export class AudioSystem {
     if (!this.ctx || !this.graph) return;
     const mix = computeAmbientMix(state);
     const now = this.ctx.currentTime;
-    this.graph.rainGain.gain.setTargetAtTime(mix.rainGain, now, MIX_RAMP_TIME_CONSTANT);
-    this.graph.humGain.gain.setTargetAtTime(mix.humGain, now, MIX_RAMP_TIME_CONSTANT);
-    this.graph.trafficGain.gain.setTargetAtTime(mix.trafficGain, now, MIX_RAMP_TIME_CONSTANT);
+    const graph = this.graph;
+    this.rainGainCache.set(mix.rainGain, (v) => graph.rainGain.gain.setTargetAtTime(v, now, MIX_RAMP_TIME_CONSTANT));
+    this.humGainCache.set(mix.humGain, (v) => graph.humGain.gain.setTargetAtTime(v, now, MIX_RAMP_TIME_CONSTANT));
+    this.trafficGainCache.set(mix.trafficGain, (v) =>
+      graph.trafficGain.gain.setTargetAtTime(v, now, MIX_RAMP_TIME_CONSTANT),
+    );
   }
 
   /**

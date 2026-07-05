@@ -72,6 +72,37 @@ describe('AudioSystem', () => {
       const targeted = ctx.gainNodes.filter((g) => g.gain.setTargetAtTimeCalls.length > 0);
       expect(targeted.length).toBeGreaterThanOrEqual(3);
     });
+
+    it('does not re-issue setTargetAtTime on subsequent ticks when the mix is unchanged (skips redundant automation events)', () => {
+      system.unlock();
+      const state = { timeOfDay: 0.2, rainIntensity: 0.6, isPlayMode: true };
+      system.update(state);
+
+      const callCountsAfterFirst = ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length);
+
+      // Same state, several more ticks -- every bus gain already ramping
+      // toward the same target should receive no further calls.
+      system.update(state);
+      system.update(state);
+      system.update(state);
+
+      const callCountsAfterRepeats = ctx.gainNodes.map((g) => g.gain.setTargetAtTimeCalls.length);
+      expect(callCountsAfterRepeats).toEqual(callCountsAfterFirst);
+    });
+
+    it('does re-issue setTargetAtTime once the mix actually changes after a run of unchanged ticks', () => {
+      system.unlock();
+      const stateA = { timeOfDay: 0.2, rainIntensity: 0.6, isPlayMode: true };
+      system.update(stateA);
+      system.update(stateA);
+      const callCountsAfterA = ctx.gainNodes.reduce((sum, g) => sum + g.gain.setTargetAtTimeCalls.length, 0);
+
+      const stateB = { timeOfDay: 0.2, rainIntensity: 0, isPlayMode: true }; // rain fully stops -- rainGain target changes
+      system.update(stateB);
+      const callCountsAfterB = ctx.gainNodes.reduce((sum, g) => sum + g.gain.setTargetAtTimeCalls.length, 0);
+
+      expect(callCountsAfterB).toBeGreaterThan(callCountsAfterA);
+    });
   });
 
   describe('updateFlybys', () => {

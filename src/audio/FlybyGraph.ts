@@ -35,6 +35,7 @@ import {
   type FlyerRelativeState,
   type ListenerRight,
 } from './flyby';
+import { RampTargetCache } from './rampCache';
 
 const VOICE_NOISE_SECONDS = 2;
 const VOICE_FILTER_Q = 1.1;
@@ -45,11 +46,19 @@ const PAN_RAMP_TIME_CONSTANT = 0.12;
 const FILTER_RAMP_TIME_CONSTANT = 0.2;
 const SILENCE_RAMP_TIME_CONSTANT = 0.25;
 
+/** Below these thresholds a re-issued `setTargetAtTime` target is indistinguishable from the last one issued -- skipped (see `RampTargetCache`). Gain/pan are unitless [~0,1]/[-1,1]; filterHz spans hundreds of Hz (`flyby.ts`'s `FLYBY_FILTER_BASE_HZ`/`FLYBY_FILTER_SWING_HZ`), so it gets a coarser absolute epsilon. */
+const GAIN_RAMP_EPSILON = 1e-4;
+const PAN_RAMP_EPSILON = 1e-3;
+const FILTER_RAMP_EPSILON = 0.5;
+
 interface Voice {
   readonly source: AudioBufferSourceNodeLike;
   readonly filter: BiquadFilterNodeLike;
   readonly gain: GainNodeLike;
   readonly panner: StereoPannerNodeLike;
+  readonly gainCache: RampTargetCache;
+  readonly panCache: RampTargetCache;
+  readonly filterCache: RampTargetCache;
 }
 
 function buildVoice(ctx: AudioContextLike, output: AudioNodeLike): Voice {
@@ -72,7 +81,15 @@ function buildVoice(ctx: AudioContextLike, output: AudioNodeLike): Voice {
   panner.connect(output);
   source.start();
 
-  return { source, filter, gain, panner };
+  return {
+    source,
+    filter,
+    gain,
+    panner,
+    gainCache: new RampTargetCache(GAIN_RAMP_EPSILON),
+    panCache: new RampTargetCache(PAN_RAMP_EPSILON),
+    filterCache: new RampTargetCache(FILTER_RAMP_EPSILON),
+  };
 }
 
 export class FlybyVoicePool {
@@ -96,16 +113,16 @@ export class FlybyVoicePool {
       const flyerIndex = assignment[slot] ?? null;
 
       if (flyerIndex === null) {
-        voice.gain.gain.setTargetAtTime(0, now, SILENCE_RAMP_TIME_CONSTANT);
+        voice.gainCache.set(0, (v) => voice.gain.gain.setTargetAtTime(v, now, SILENCE_RAMP_TIME_CONSTANT));
         this.previousTargets[slot] = null;
         continue;
       }
 
       const flyer = flyers[flyerIndex]!;
       const target = computeVoiceTarget(flyer, listenerRight);
-      voice.gain.gain.setTargetAtTime(target.gain, now, GAIN_RAMP_TIME_CONSTANT);
-      voice.panner.pan.setTargetAtTime(target.pan, now, PAN_RAMP_TIME_CONSTANT);
-      voice.filter.frequency.setTargetAtTime(target.filterHz, now, FILTER_RAMP_TIME_CONSTANT);
+      voice.gainCache.set(target.gain, (v) => voice.gain.gain.setTargetAtTime(v, now, GAIN_RAMP_TIME_CONSTANT));
+      voice.panCache.set(target.pan, (v) => voice.panner.pan.setTargetAtTime(v, now, PAN_RAMP_TIME_CONSTANT));
+      voice.filterCache.set(target.filterHz, (v) => voice.filter.frequency.setTargetAtTime(v, now, FILTER_RAMP_TIME_CONSTANT));
 
       // Copy, not a reference -- the caller's `flyers` array/objects may be
       // scratch state it mutates in place next frame (see `EntitySystem`).

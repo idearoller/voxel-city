@@ -82,6 +82,113 @@ function isElevatedSpawnDistanceOk(
 }
 
 /**
+ * Bucket edge length (world units) for the spatial index built by
+ * `getElevatedSpatialIndex`. Chosen so a typical spawn-radius query
+ * (`spawnMaxRadius`, ~90) only ever touches a handful of buckets per axis,
+ * while a bucket's own cell count stays small even for a citywide
+ * tower-lobby flood (`NavGrid.deriveTowerLobbyCells` budgets up to 20,000
+ * cells per tower) — neither dimension of the query cost grows with city
+ * size.
+ */
+const ELEVATED_BUCKET_SIZE = 32;
+
+/** One elevated level's cells, spatially bucketed for range queries — see `getElevatedSpatialIndex`. */
+interface ElevatedLevelIndex {
+  readonly y: number;
+  readonly buckets: ReadonlyMap<string, ReadonlyArray<{ readonly x: number; readonly z: number }>>;
+}
+
+function bucketKey(bx: number, bz: number): string {
+  return `${bx},${bz}`;
+}
+
+function buildElevatedLevelIndex(level: { y: number; cells: ReadonlyArray<{ x: number; z: number }> }): ElevatedLevelIndex {
+  const buckets = new Map<string, Array<{ x: number; z: number }>>();
+  for (const cell of level.cells) {
+    const key = bucketKey(Math.floor(cell.x / ELEVATED_BUCKET_SIZE), Math.floor(cell.z / ELEVATED_BUCKET_SIZE));
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+    }
+    bucket.push(cell);
+  }
+  return { y: level.y, buckets };
+}
+
+/**
+ * Lazily built, cached-per-`NavGrid`-instance spatial index over
+ * `grid.elevatedLevels`' own cell lists, keyed by object identity — a fresh
+ * `NavGrid` (city regen or `.vxc` import) always misses and rebuilds; a
+ * `NavGrid` is never mutated in place after `buildNavGrid` returns it, so a
+ * cache hit is never stale. Building it costs one pass over every elevated
+ * cell citywide, exactly once per city, in exchange for spawn attempts never
+ * re-scanning that same full cell list (see `pickElevatedSpawnCell`'s doc
+ * comment for the citywide-scan cost this replaces).
+ */
+const elevatedIndexCache = new WeakMap<NavGrid, readonly ElevatedLevelIndex[]>();
+
+function getElevatedSpatialIndex(grid: NavGrid): readonly ElevatedLevelIndex[] {
+  let index = elevatedIndexCache.get(grid);
+  if (!index) {
+    index = grid.elevatedLevels.map(buildElevatedLevelIndex);
+    elevatedIndexCache.set(grid, index);
+  }
+  return index;
+}
+
+function queryBucketedCellsNear(
+  index: ElevatedLevelIndex,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+): ReadonlyArray<{ readonly x: number; readonly z: number }> {
+  const minBx = Math.floor((centerX - radius) / ELEVATED_BUCKET_SIZE);
+  const maxBx = Math.floor((centerX + radius) / ELEVATED_BUCKET_SIZE);
+  const minBz = Math.floor((centerZ - radius) / ELEVATED_BUCKET_SIZE);
+  const maxBz = Math.floor((centerZ + radius) / ELEVATED_BUCKET_SIZE);
+
+  const result: Array<{ x: number; z: number }> = [];
+  for (let bx = minBx; bx <= maxBx; bx++) {
+    for (let bz = minBz; bz <= maxBz; bz++) {
+      const bucket = index.buckets.get(bucketKey(bx, bz));
+      if (bucket) result.push(...bucket);
+    }
+  }
+  return result;
+}
+
+/**
+ * Every elevated cell across all of `grid.elevatedLevels` whose bucket falls
+ * within `radius` of (centerX, centerZ), tagged with which level it came
+ * from (`levelIndex`, matching `grid.elevatedLevels`' own order) — a
+ * superset of the cells actually within `radius` (whole buckets are
+ * included, not clipped to the circle), narrowed further by
+ * `isElevatedSpawnDistanceOk`. Exported so its boundedness is directly
+ * testable: for a `NavGrid` with its elevated cells spread across a wide
+ * map, this returns a small, `radius`-bounded subset, not the level's full
+ * cell list, no matter how large that list is — the fix for the citywide
+ * per-tick scan `pickElevatedSpawnCell` used to run (see its own doc
+ * comment).
+ */
+export function elevatedCellsNear(
+  grid: NavGrid,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+): ReadonlyArray<{ readonly x: number; readonly z: number; readonly levelIndex: number }> {
+  const index = getElevatedSpatialIndex(grid);
+  const result: Array<{ x: number; z: number; levelIndex: number }> = [];
+  for (let i = 0; i < index.length; i++) {
+    const levelIndex = index[i] as ElevatedLevelIndex;
+    for (const cell of queryBucketedCellsNear(levelIndex, centerX, centerZ, radius)) {
+      result.push({ x: cell.x, z: cell.z, levelIndex: i });
+    }
+  }
+  return result;
+}
+
+/**
  * Picks a spawn cell for an elevated pedestrian directly from the walkable
  * decks' own (precomputed) cell lists, filtered to the ones currently within
  * spawn range of the player, or `null` if none qualify (no deck reachable
@@ -108,6 +215,14 @@ function isElevatedSpawnDistanceOk(
  *    that pops in "in plain sight" at a steep, prominent viewing angle —
  *    `isElevatedSpawnDistanceOk` grows the effective minimum horizontal
  *    distance with altitude difference to compensate.
+ *
+ * The elevated-share roll happens *before* any per-level cell data is
+ * touched, and the candidates actually scanned come from the spatial index
+ * above rather than each level's full `cells` list — a citywide scan (every
+ * elevated cell in the city, up to 20,000+ per tower-lobby-flooded tower)
+ * used to run on *every* spawn attempt, including the ~70% of attempts
+ * (at the default `maxElevatedShare`) where the roll misses and the whole
+ * scan is thrown away unused. See `PERF.md`.
  */
 export function pickElevatedSpawnCell(
   grid: NavGrid,
@@ -119,15 +234,20 @@ export function pickElevatedSpawnCell(
   rng: Rng,
   maxElevatedShare: number = DEFAULT_MAX_ELEVATED_SHARE,
 ): { x: number; z: number; y: number } | null {
-  const perLevelCandidates = grid.elevatedLevels.map((level) =>
-    level.cells.filter((cell) =>
+  if (rng.float(0, 1) >= maxElevatedShare) return null;
+
+  const perLevelCandidates: Array<Array<{ x: number; z: number }>> = grid.elevatedLevels.map(() => []);
+  for (const cell of elevatedCellsNear(grid, playerX, playerZ, maxRadius)) {
+    (perLevelCandidates[cell.levelIndex] as Array<{ x: number; z: number }>).push(cell);
+  }
+  for (let i = 0; i < perLevelCandidates.length; i++) {
+    const level = grid.elevatedLevels[i] as (typeof grid.elevatedLevels)[number];
+    perLevelCandidates[i] = (perLevelCandidates[i] as Array<{ x: number; z: number }>).filter((cell) =>
       isElevatedSpawnDistanceOk(cell.x, cell.z, playerX, playerZ, minRadius, maxRadius, level.y, playerY),
-    ),
-  );
+    );
+  }
   const totalCandidates = perLevelCandidates.reduce((sum, cells) => sum + cells.length, 0);
   if (totalCandidates === 0) return null; // no deck reachable near the player right now
-
-  if (rng.float(0, 1) >= maxElevatedShare) return null;
 
   const roll = rng.float(0, totalCandidates);
   let cumulative = 0;

@@ -19,6 +19,8 @@ const MAX_PITCH = Math.PI / 2 - 0.01;
 export class LookControls {
   private yaw = 0;
   private pitch = 0;
+  /** Scratch `Euler` reused across every `applyDelta` call (mousemove fires far more often than once a frame) instead of allocated per call — nothing holds a reference to it past `setFromEuler`. */
+  private readonly eulerScratch = new THREE.Euler(0, 0, 0, 'YXZ');
 
   constructor(
     private readonly camera: THREE.Camera,
@@ -67,7 +69,7 @@ export class LookControls {
     this.pitch -= deltaY * sensitivity;
     this.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, this.pitch));
 
-    this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+    this.camera.quaternion.setFromEuler(this.eulerScratch.set(this.pitch, this.yaw, 0, 'YXZ'));
   }
 
   dispose(): void {

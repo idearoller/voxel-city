@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DEFAULT_TIME_OF_DAY, interpolateAtmosphere } from './dayNight';
+import { DEFAULT_TIME_OF_DAY, interpolateAtmosphere, type AtmosphereParams } from './dayNight';
 
 const SKY_RADIUS = 500;
 const STAR_COUNT = 1500;
@@ -97,6 +97,15 @@ export class Atmosphere {
   private timeOfDay = DEFAULT_TIME_OF_DAY;
   private paused = false;
   private bloomStrengthListener: ((strength: number) => void) | null = null;
+  /**
+   * The most recent `interpolateAtmosphere(this.timeOfDay)` result, cached by
+   * `applyTimeOfDay` — `nightFactor` reads `starOpacity` off this instead of
+   * recomputing a fresh 10-field object, since `interpolateAtmosphere` is
+   * otherwise called up to 3x/tick (once here, twice more via `nightFactor`
+   * at `main.ts`'s rain/billboard update sites) for a value that only
+   * changes once `timeOfDay` itself does.
+   */
+  private currentParams: AtmosphereParams = interpolateAtmosphere(this.timeOfDay);
 
   constructor(private readonly scene: THREE.Scene) {
     this.sky = buildSky();
@@ -152,6 +161,7 @@ export class Atmosphere {
 
   private applyTimeOfDay(): void {
     const params = interpolateAtmosphere(this.timeOfDay);
+    this.currentParams = params;
 
     this.skyHorizonColor.setHex(params.skyHorizonColor);
     this.skyZenithColor.setHex(params.skyZenithColor);
@@ -181,7 +191,7 @@ export class Atmosphere {
    * doubles as the night factor rather than recomputing it separately.
    */
   get nightFactor(): number {
-    return interpolateAtmosphere(this.timeOfDay).starOpacity;
+    return this.currentParams.starOpacity;
   }
 
   /**

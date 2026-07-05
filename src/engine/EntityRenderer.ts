@@ -63,6 +63,8 @@ export class EntityRenderer {
   private readonly flyingVehicleBodyMesh: THREE.InstancedMesh;
   private readonly flyingVehicleGlowMesh: THREE.InstancedMesh;
   private readonly dummy = new THREE.Object3D();
+  /** Scratch vector for the vehicle glow strip's backward offset (see `updateVehicles`) — reused every frame instead of allocated per vehicle, since nothing holds a reference across frames. */
+  private readonly vehicleForwardScratch = new THREE.Vector3();
 
   constructor(scene: THREE.Scene, maxPedestrians: number, maxVehicles: number, maxFlyingVehicles: number = 0) {
     this.pedestrianBodyMesh = new THREE.InstancedMesh(PEDESTRIAN_BODY_GEOMETRY, pedestrianBodyMaterial, maxPedestrians);
@@ -154,7 +156,7 @@ export class EntityRenderer {
       this.vehicleBodyMesh.setMatrixAt(i, this.dummy.matrix);
 
       // Offset backward along the vehicle's own heading so the glow strip reads as a taillight, not a headlight.
-      const forward = new THREE.Vector3(0, 0, 1).applyEuler(this.dummy.rotation);
+      const forward = this.vehicleForwardScratch.set(0, 0, 1).applyEuler(this.dummy.rotation);
       this.dummy.position.addScaledVector(forward, VEHICLE_GLOW_OFFSET_FORWARD);
       this.dummy.position.y = feetY + VEHICLE_HOVER_HEIGHT + VEHICLE_GLOW_OFFSET_Y;
       this.dummy.updateMatrix();

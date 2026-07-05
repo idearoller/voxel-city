@@ -196,3 +196,69 @@ sub-step remainder alongside whole steps, accumulating leftover across
 frames, hitting the cap exactly (no drop), and exceeding it (steps clamped
 to the cap, accumulator dropped to 0 and not carried into the next frame's
 computation).
+
+## Task 32: cutting steady-state per-tick CPU/GC churn
+
+With tasks 30/31 gone, what was left was smaller, everywhere costs rather
+than one dominant one: a citywide scan and a stream of small per-tick
+allocations and no-op WebAudio automation events, all running forever at
+the fixed tick rate regardless of what's actually changed.
+
+**Spawner elevated-cell scan (`Spawner.ts`'s `pickElevatedSpawnCell`).**
+Every pedestrian spawn attempt (while under the 120-pedestrian cap) used to
+filter *every* elevated deck cell citywide against the current spawn
+annulus — up to 20,000+ cells for a single tower's lobby flood alone (see
+`NavGrid.MAX_LOBBY_FLOOD_CELLS_PER_TOWER`) — building a fresh filtered array
+per level, every tick. Worse, this ran *before* the 30% elevated-share roll,
+so ~70% of attempts computed the whole scan and threw it away unused. Fixed
+two ways: (1) the share roll now runs first, so a miss skips the scan
+entirely; (2) the scan itself no longer touches every cell — `Spawner.ts`
+lazily builds and caches (per `NavGrid` instance, via `WeakMap`) a coarse
+spatial index over each elevated level's cells (32-unit buckets), and
+`elevatedCellsNear` (newly exported) queries only the handful of buckets
+overlapping the spawn radius. Query cost now scales with the query radius,
+not city size. `test/Spawner.test.ts`'s `elevatedCellsNear` suite builds a
+~40,000-cell synthetic citywide level and asserts the query returns a small
+bounded subset (not the whole list) while still finding genuinely nearby
+cells — a revert back to a full `.filter()` over `level.cells` would fail
+the boundedness assertion.
+
+**Per-frame scratch allocations.** Three small, high-frequency allocations
+hoisted to reused scratch fields/module state, each previously allocated
+fresh every call:
+- `EntityRenderer.updateVehicles` allocated a `THREE.Vector3` per ground
+  vehicle per render frame (~2400 allocs/s at the 40-vehicle cap, 60fps) —
+  now a single reused `vehicleForwardScratch` instance field.
+- `LookControls.applyDelta` allocated a `THREE.Euler` per mousemove event —
+  now a reused `eulerScratch` instance field.
+- `Atmosphere` called `interpolateAtmosphere` (a fresh 10-field object) up
+  to 3x/tick: once internally (`applyTimeOfDay`) and twice more via the
+  `nightFactor` getter (`main.ts`'s rain and billboard-layer update calls).
+  `nightFactor` now reads `starOpacity` off the result `applyTimeOfDay`
+  already cached, cutting 3 allocations/tick to 1. `test/Atmosphere.test.ts`
+  spies on `dayNight.interpolateAtmosphere` and asserts reading `nightFactor`
+  repeatedly issues no further calls beyond the one `setTimeOfDay` made.
+- `Vehicle.ts`'s `laneKey`/`applyVehicleFollowSpacing` (string lane keys,
+  rebuilt into a fresh array every tick) was reviewed but left as-is: at
+  ≤40 vehicles this is a few dozen small string concats and one short-lived
+  array per tick, well below the threshold where restructuring
+  `LaneMember`/`computeFollowOrder` away from string keys would be worth the
+  readability cost.
+
+**Audio param ramp spam (`AudioSystem.update`, `FlybyGraph.update`).** Both
+issued `setTargetAtTime` every tick regardless of whether the target value
+had actually changed — ~900 automation events/s combined once several
+flyby voices are active, forever. `setTargetAtTime` is an exponential
+*approach*, so re-issuing the same target is an inaudible no-op; the fix
+(`src/audio/rampCache.ts`'s `RampTargetCache`) tracks the last target each
+param was actually *issued* (not its current, possibly-still-ramping
+value) and skips re-issuing within a small epsilon, per param, so a target
+that's genuinely still changing is never frozen mid-ramp — only true
+repeats are elided. Used by both `AudioSystem.update` (3 bus gains) and
+`FlybyVoicePool.update` (gain/pan/filter per voice). Covered by
+`test/audio/rampCache.test.ts` (the cache in isolation, including the
+"compares against last-issued, not a running current value" invariant) and
+revert-probe tests in `AudioSystem.test.ts`/`FlybyGraph.test.ts` that drive
+identical state across several ticks and assert no additional
+`setTargetAtTimeCalls` are recorded on the fake context, then confirm a
+genuine change still issues one.

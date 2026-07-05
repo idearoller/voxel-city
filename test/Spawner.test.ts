@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isSidewalkCell, type ElevatedLevel, type NavGrid } from '../src/entities/NavGrid';
 import {
+  elevatedCellsNear,
   isBeyondDespawnRadius,
   isSpawnClearOfVehicles,
   pickElevatedSpawnCell,
@@ -44,6 +45,11 @@ function makeElevatedLevelFrom(y: number, width: number, walkable: Uint8Array): 
 /** A fully-walkable `width` x `depth` elevated level at `y`. */
 function makeElevatedLevel(width: number, depth: number, y: number): ElevatedLevel {
   return makeElevatedLevelFrom(y, width, new Uint8Array(width * depth).fill(1));
+}
+
+/** An `ElevatedLevel` built directly from a sparse cell list, without a full `walkable` grid — for tests modeling deck cells spread across coordinates far larger than any grid it'd be practical to allocate a dense `Uint8Array` for. Nothing under test here reads `walkable`. */
+function makeSparseElevatedLevel(y: number, cells: ReadonlyArray<{ x: number; z: number }>): ElevatedLevel {
+  return { y, walkable: new Uint8Array(0), cells };
 }
 
 describe('pickSpawnCell', () => {
@@ -216,6 +222,80 @@ describe('pickElevatedSpawnCell', () => {
 
     expect(bigCount + smallCount).toBeGreaterThan(0);
     expect(bigCount).toBeGreaterThan(smallCount); // overwhelmingly weighted toward the bigger deck
+  });
+});
+
+describe('elevatedCellsNear', () => {
+  // Models a citywide elevated deck cell list far too large to filter in
+  // full on every spawn attempt (see `pickElevatedSpawnCell`'s doc comment
+  // on the citywide-scan cost this spatial index replaces) -- deliberately
+  // built from a sparse cell list, not a dense per-cell `walkable` grid,
+  // since a real tower-lobby flood can budget up to 20,000 cells *per
+  // tower* (`NavGrid.MAX_LOBBY_FLOOD_CELLS_PER_TOWER`) spread across a
+  // whole city, not a small bounding box.
+  const FAR_CELL_COUNT = 40_000;
+  const COORD_SPAN = 100_000;
+  const CENTER = 50_000;
+  const NEAR_CELLS: ReadonlyArray<{ x: number; z: number }> = [
+    { x: CENTER + 10, z: CENTER + 10 },
+    { x: CENTER - 10, z: CENTER - 5 },
+    { x: CENTER + 40, z: CENTER - 40 },
+  ];
+
+  function buildCitywideLevel(): ElevatedLevel {
+    const farCells: Array<{ x: number; z: number }> = [];
+    for (let i = 0; i < FAR_CELL_COUNT; i++) {
+      // Deterministic pseudo-scatter (no RNG) -- coprime-ish strides keep it
+      // spread across the full span rather than landing on a lattice that
+      // could accidentally cluster near CENTER.
+      farCells.push({ x: (i * 37) % COORD_SPAN, z: (i * 53) % COORD_SPAN });
+    }
+    return makeSparseElevatedLevel(30, [...farCells, ...NEAR_CELLS]);
+  }
+
+  it('returns a small, radius-bounded subset of a citywide cell list, not the whole list', () => {
+    const grid = makeGrid(10, 10, [], [buildCitywideLevel()]);
+
+    const result = elevatedCellsNear(grid, CENTER, CENTER, 90);
+
+    // Nowhere near the ~40,000 total cells -- proof the query is bucketed,
+    // not a citywide `.filter()` over every elevated cell.
+    expect(result.length).toBeLessThan(1000);
+  });
+
+  it('still includes every genuinely nearby cell despite the bucketing', () => {
+    const grid = makeGrid(10, 10, [], [buildCitywideLevel()]);
+
+    const result = elevatedCellsNear(grid, CENTER, CENTER, 90);
+
+    for (const near of NEAR_CELLS) {
+      expect(result.some((cell) => cell.x === near.x && cell.z === near.z)).toBe(true);
+    }
+  });
+
+  it('tags each cell with its source level index, matching grid.elevatedLevels order', () => {
+    const levelA = makeSparseElevatedLevel(30, [{ x: 100, z: 100 }]);
+    const levelB = makeSparseElevatedLevel(60, [{ x: 100, z: 100 }]);
+    const grid = makeGrid(10, 10, [], [levelA, levelB]);
+
+    const result = elevatedCellsNear(grid, 100, 100, 10);
+
+    expect(result.some((c) => c.levelIndex === 0)).toBe(true);
+    expect(result.some((c) => c.levelIndex === 1)).toBe(true);
+  });
+
+  it('pickElevatedSpawnCell still finds a hit near the player against the same citywide cell list', () => {
+    const grid = makeGrid(10, 10, [], [buildCitywideLevel()]);
+    const rng = createRng('elevated-citywide-hit');
+
+    // maxElevatedShare=1 forces the roll through every trial, isolating the
+    // scan/sampling behavior from the share gate.
+    let hits = 0;
+    for (let i = 0; i < 20; i++) {
+      const result = pickElevatedSpawnCell(grid, CENTER, 30, CENTER, 0, 90, rng, 1);
+      if (result) hits++;
+    }
+    expect(hits).toBeGreaterThan(0);
   });
 });
 
