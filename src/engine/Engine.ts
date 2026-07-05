@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { computeFixedSteps, FIXED_TIMESTEP } from './FixedTimestep';
+import { applyPixelRatio } from './PixelRatioSync';
 
 export interface EngineCallbacks {
   /** Called at a fixed 60Hz cadence for deterministic simulation logic. */
@@ -12,11 +13,14 @@ export interface EngineCallbacks {
  * Structural port for a post-processing chain (implemented by `PostFX`).
  * Kept as an interface, not a direct `PostFX`/`EffectComposer` dependency,
  * so `Engine` stays free of postprocessing-specific imports; it only needs
- * something it can resize and ask to render.
+ * something it can resize, ask to render, and (see `PixelRatioSync.ts`)
+ * re-pixel-ratio.
  */
 export interface Composer {
   resize: (width: number, height: number) => void;
   render: () => void;
+  /** Must invalidate any pixel-ratio-derived render target sizing -- see `PixelRatioSync.ts`'s doc comment for why a bare `resize()` isn't enough. */
+  setPixelRatio: (ratio: number) => void;
 }
 
 /**
@@ -82,6 +86,17 @@ export class Engine {
   /** Routes final-frame rendering through a post-processing chain (e.g. `PostFX`) instead of a bare `renderer.render()`. */
   setComposer(composer: Composer): void {
     this.composer = composer;
+  }
+
+  /**
+   * Runtime hook for the quality toggle (see `QualityParams.ts`) to change
+   * the devicePixelRatio clamp without a reload. Delegates the actual
+   * renderer/composer/resize sequencing to `PixelRatioSync.applyPixelRatio`
+   * -- see that module's doc comment for why the composer needs its own
+   * explicit `setPixelRatio` call, not just a `resize()`.
+   */
+  setPixelRatio(ratio: number): void {
+    applyPixelRatio(this.renderer, this.composer, () => this.resize(), ratio);
   }
 
   start(callbacks: EngineCallbacks): void {

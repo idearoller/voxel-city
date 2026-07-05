@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { chunkMeshBuffersToGeometries } from './ChunkGeometryBuilder';
 import type { ChunkMeshBuffers } from './ChunkMesher';
-import { isChunkVisible, type ChunkCoord } from './ChunkVisibility';
+import { CULL_RADIUS, isChunkVisible, type ChunkCoord } from './ChunkVisibility';
 import { createDefaultMesherScheduler, type MesherScheduler } from './MesherScheduler';
 import { neonMaterials, roadMaterial, solidMaterial, windowLitMaterial } from './Materials';
 import { parseChunkKey } from '../world/coords';
@@ -36,6 +36,8 @@ function scheduleTick(fn: () => void): void {
 export class ChunkRenderer {
   private readonly meshes = new Map<string, ChunkMeshes>();
   private readonly scheduler: MesherScheduler;
+  /** Overridable by `setCullRadius` (the quality toggle, see `QualityParams.ts`); defaults to the fog-derived `CULL_RADIUS` so behavior is unchanged until something calls it. */
+  private cullRadius: number = CULL_RADIUS;
 
   constructor(
     world: World,
@@ -63,6 +65,17 @@ export class ChunkRenderer {
   }
 
   /**
+   * Overrides the distance-cull radius `update()` evaluates against — the
+   * quality toggle's Low/Medium tiers shrink this below `CULL_RADIUS` to cut
+   * triangle count at the cost of an earlier, more visible fog-line pop (see
+   * `QualityParams.ts`'s fog-occlusion comment). Takes effect on the very
+   * next `update()`, since visibility is already re-evaluated every frame.
+   */
+  setCullRadius(radius: number): void {
+    this.cullRadius = radius;
+  }
+
+  /**
    * Forces every chunk mesh visible, bypassing distance culling, until the
    * next `update()`. `EnvironmentProbe`'s cubemap capture renders the scene
    * from its own fixed position near the city center, not the player's
@@ -79,7 +92,7 @@ export class ChunkRenderer {
   private updateVisibility(cameraPosition: THREE.Vector3): void {
     const { x, y, z } = cameraPosition;
     for (const chunk of this.meshes.values()) {
-      this.setChunkVisible(chunk, isChunkVisible(chunk, x, y, z));
+      this.setChunkVisible(chunk, isChunkVisible(chunk, x, y, z, this.cullRadius));
     }
   }
 

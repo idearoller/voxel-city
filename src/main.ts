@@ -3,6 +3,7 @@ import { AudioSystem, type AudioContextFactory } from './audio/AudioSystem';
 import type { FlyerRelativeState } from './audio/types';
 import { Engine } from './engine/Engine';
 import { ChunkRenderer } from './engine/ChunkRenderer';
+import { CULL_RADIUS } from './engine/ChunkVisibility';
 import { ExclusiveGate } from './engine/ExclusiveGate';
 import { EntitySystem } from './entities/EntitySystem';
 import { ElevatorSystem } from './elevators/ElevatorSystem';
@@ -13,6 +14,8 @@ import { scanBillboardFaces } from './engine/BillboardScanner';
 import { EnvironmentProbe } from './engine/EnvironmentProbe';
 import { updateNeon, roadMaterial } from './engine/Materials';
 import { PostFX } from './engine/PostFX';
+import { qualityParams } from './engine/QualityParams';
+import { QualityPreference, type QualityTier } from './engine/QualityPreference';
 import { Rain } from './engine/Rain';
 import { RainIntensityPreference } from './engine/RainIntensityPreference';
 import { ModeManager } from './player/ModeManager';
@@ -116,6 +119,36 @@ function rebuildBillboards(seed: string): void {
 const postFX = new PostFX(engine.renderer, engine.scene, engine.camera);
 engine.setComposer(postFX);
 atmosphere.onBloomStrengthChange((strength) => postFX.setBloomStrength(strength));
+
+// Quality toggle: Low/Medium/High trade triangle count and fill rate for
+// thermal/battery headroom on a throttling laptop or a phone. High matches
+// what every build shipped before this toggle existed (DPR clamp 1.5, full
+// CULL_RADIUS, bloom on) -- see QualityPreference.ts for why that stays the
+// default. Device/session preference like rain intensity and mute, not city
+// data, so it isn't part of `.vxc` metadata either.
+const qualityPreference = new QualityPreference(readLocalStorage());
+
+/**
+ * Applies one tier's {dpr, cullRadiusScale, bloomEnabled} to the renderer/
+ * chunk culling/bloom pass — called on startup and every toolbar quality
+ * change, taking effect immediately (no reload).
+ *
+ * `qualityParams('high').dpr` is a flat 1.5, matching the pre-toggle
+ * hardcoded clamp in `Engine`'s constructor -- but that clamp was always
+ * `min(devicePixelRatio, 1.5)`, not a flat 1.5. Reapplying the flat value
+ * unclamped here would *upscale* a devicePixelRatio=1 monitor to 1.5x (2.25x
+ * the pixel count) -- a supersampling regression on exactly the thermal-
+ * limited hardware this toggle exists to help. Clamping against the actual
+ * device ratio at apply time preserves the original behavior for High and
+ * gives Medium/Low the same protection.
+ */
+function applyQuality(tier: QualityTier): void {
+  const params = qualityParams(tier);
+  engine.setPixelRatio(Math.min(params.dpr, window.devicePixelRatio));
+  chunkRenderer.setCullRadius(CULL_RADIUS * params.cullRadiusScale);
+  postFX.setBloomEnabled(params.bloomEnabled);
+}
+applyQuality(qualityPreference.tier);
 
 const environmentProbe = new EnvironmentProbe(engine.renderer);
 // Defaults to the world's geometric center; `spawnAboveCity` overwrites this
@@ -458,6 +491,11 @@ toolbar.onRainIntensityChange((intensity) => {
 toolbar.onToggleMute(() => toggleMute());
 toolbar.setMuted(audioSystem.isMuted);
 touchControlsUI.setMuted(audioSystem.isMuted);
+toolbar.setQuality(qualityPreference.tier);
+toolbar.onQualityChange((tier) => {
+  qualityPreference.set(tier);
+  applyQuality(tier);
+});
 toolbar.onExportRequest(() => exportCity());
 toolbar.onImportRequest((file) => {
   void generationGate.run(() => importCity(file));

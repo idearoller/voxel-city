@@ -49,9 +49,38 @@ export class PostFX {
     this.bloomPass.strength = strength;
   }
 
+  /**
+   * Runtime bloom bypass for the quality toggle's Low tier (see
+   * `QualityParams.ts`) -- bloom's `UnrealBloomPass` is the single most
+   * expensive pass in this chain (5-mip blur), so switching it off is the
+   * toggle's single biggest lever. Sets `Pass.enabled`, which
+   * `EffectComposer.render()` already respects by skipping disabled passes
+   * entirely, rather than removing/re-adding the pass or rebuilding the
+   * composer -- no render target is allocated or disposed either way, so
+   * this is leak-free and freely reversible at runtime.
+   */
+  setBloomEnabled(enabled: boolean): void {
+    this.bloomPass.enabled = enabled;
+  }
+
   resize(width: number, height: number): void {
     this.composer.setSize(width, height);
     this.bloomPass.resolution.set(width * BLOOM_RESOLUTION_SCALE, height * BLOOM_RESOLUTION_SCALE);
+  }
+
+  /**
+   * Runtime hook for the quality toggle's DPR lever (see `PixelRatioSync.ts`
+   * for why `Engine.setPixelRatio` calls this specifically, not just
+   * `resize()`). `EffectComposer` caches its own pixel ratio at construction
+   * time and only re-derives `renderTarget1`/`renderTarget2`'s device-pixel
+   * size inside its own `setPixelRatio()` -- a bare `composer.setSize(w, h)`
+   * (what `resize()` calls) reuses that stale cached ratio, so without this
+   * method the two expensive passes (RenderPass, UnrealBloomPass) would stay
+   * frozen at whatever ratio was in effect when this `PostFX` was
+   * constructed, no matter how many times `resize()` ran afterwards.
+   */
+  setPixelRatio(ratio: number): void {
+    this.composer.setPixelRatio(ratio);
   }
 
   render(): void {

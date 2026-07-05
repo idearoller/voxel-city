@@ -57,7 +57,23 @@ seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
 falls, and is remembered between sessions), **🔊 SOUND** to mute/unmute ambient audio (rain,
 neon hum, distant traffic, and positional hover-car whooshes when you fly
 near a sky lane — all synthesized via WebAudio, no audio files),
-**⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
+**⚙ QUALITY** to cycle render quality (Low/Medium/High — remembered between
+sessions, defaults to High so nobody's first load post-upgrade looks
+different; dial it down on a device that's thermally throttling or a phone
+that needs the headroom), **⤓ EXPORT** / **⤒ IMPORT** for `.vxc` city files.
+
+Quality tiers trade triangle count and fill rate for thermal/battery
+headroom: High (default) matches the pre-toggle shipped behavior — DPR
+clamped to `min(1.5, devicePixelRatio)`, full fog-derived chunk-cull radius,
+bloom on. Medium clamps DPR to `min(1.25, devicePixelRatio)` and shrinks the
+cull radius to 80%. Low clamps DPR to `min(1.0, devicePixelRatio)`, shrinks
+the cull radius to 70%, and turns bloom off entirely (its `UnrealBloomPass`
+is the single most expensive pass in the post-processing chain). Every
+tier's DPR is clamped against the device's actual pixel ratio, never
+upscaling a low-DPR display past its native resolution. Shrinking the cull
+radius trades an earlier, more visible fog-line pop for fewer triangles —
+see `src/engine/QualityParams.ts` for the exact fog-occlusion percentage at
+each tier's radius. Every change applies immediately, no reload needed.
 
 ### Touch controls
 
@@ -125,7 +141,9 @@ src/
               loop), ChunkRenderer + worker-pool ChunkMesher (budgeted per
               frame, sync fallback), Materials, Atmosphere (sky/fog/
               day-night), PostFX (bloom), EnvironmentProbe (wet-street
-              reflections), Rain, neon animation, billboard atlas/layer.
+              reflections), Rain, neon animation, billboard atlas/layer,
+              QualityPreference/QualityParams (Low/Medium/High render
+              quality toggle — pure tier persistence + tier->params map).
   player/     Sandbox fly controller, first-person walk controller with
               AABB-vs-voxel collision + auto-step, mode switching, look
               controls, voxel raycasting.

@@ -145,4 +145,40 @@ describe('ChunkRenderer distance culling', () => {
 
     expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(true);
   });
+
+  it('setCullRadius() shrinks the effective radius so a chunk within the default CULL_RADIUS, but beyond the shrunk one, is culled', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    // A chunk just inside the default CULL_RADIUS -- visible before any override.
+    const nearCx = Math.floor((CULL_RADIUS - 10) / CHUNK_SIZE);
+    const nearX = nearCx * CHUNK_SIZE;
+    world.setBlock(nearX, 1, 1, CONCRETE);
+    await renderer.flushPending();
+
+    renderer.update(ORIGIN);
+    expect(meshesForKey(renderer, `${nearCx},0,0`).every((m) => m.visible)).toBe(true);
+
+    // Quality tiers scale CULL_RADIUS down (see QualityParams.ts); a scale
+    // small enough to fall below this chunk's distance should cull it.
+    renderer.setCullRadius(CULL_RADIUS * 0.1);
+    renderer.update(ORIGIN);
+
+    expect(meshesForKey(renderer, `${nearCx},0,0`).every((m) => m.visible)).toBe(false);
+  });
+
+  it('setCullRadius() takes effect immediately on the next update(), no reload needed', async () => {
+    const world = new World();
+    const renderer = new ChunkRenderer(world, new THREE.Scene());
+    world.setBlock(FAR_CHUNK_X, 1, 1, CONCRETE);
+    await renderer.flushPending();
+    renderer.update(ORIGIN);
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(false);
+
+    // Widening the radius past the far chunk's distance should reveal it on
+    // the very next update() -- no re-flush, no reconstruction.
+    renderer.setCullRadius(FAR_CHUNK_X + CHUNK_SIZE);
+    renderer.update(ORIGIN);
+
+    expect(meshesForKey(renderer, `${FAR_CHUNK_CX},0,0`).every((m) => m.visible)).toBe(true);
+  });
 });

@@ -14,6 +14,24 @@ export type ExportRequestListener = () => void;
 export type ImportRequestListener = (file: File) => void;
 export type RainIntensityListener = (intensity: number) => void;
 
+/**
+ * Kept as a plain string union rather than importing `engine/QualityPreference`'s
+ * `QualityTier` -- this file (like the rest of `ui/`) has no dependency on
+ * `engine/` today (see `RainIntensityListener`'s plain `number`, not a
+ * `RainIntensityPreference` import); main.ts is what wires the two together.
+ */
+export type QualityTier = 'low' | 'medium' | 'high';
+export type QualityChangeListener = (tier: QualityTier) => void;
+
+/** Cycle order for the QUALITY button: click steps forward, wrapping high -> low. */
+const QUALITY_CYCLE: readonly QualityTier[] = ['low', 'medium', 'high'];
+
+const QUALITY_LABEL: Record<QualityTier, string> = {
+  low: '⚙ QUALITY: LOW',
+  medium: '⚙ QUALITY: MED',
+  high: '⚙ QUALITY: HIGH',
+};
+
 export class Toolbar {
   private readonly root: HTMLElement;
   private readonly seedInput: HTMLInputElement;
@@ -21,14 +39,17 @@ export class Toolbar {
   private readonly rainButton: HTMLButtonElement;
   private readonly rainIntensitySlider: HTMLInputElement;
   private readonly muteButton: HTMLButtonElement;
+  private readonly qualityButton: HTMLButtonElement;
   private readonly importFileInput: HTMLInputElement;
   private readonly listeners: GenerateRequestListener[] = [];
   private readonly pauseListeners: ToggleListener[] = [];
   private readonly rainListeners: ToggleListener[] = [];
   private readonly rainIntensityListeners: RainIntensityListener[] = [];
   private readonly muteListeners: ToggleListener[] = [];
+  private readonly qualityListeners: QualityChangeListener[] = [];
   private readonly exportListeners: ExportRequestListener[] = [];
   private readonly importListeners: ImportRequestListener[] = [];
+  private qualityTier: QualityTier = 'high';
 
   constructor(container: HTMLElement, initialSeed: string) {
     this.root = document.createElement('div');
@@ -115,6 +136,23 @@ export class Toolbar {
     });
     this.root.appendChild(this.muteButton);
 
+    // Three-state cycle (not a checkbox-style toggle, since there are three
+    // tiers, not two) -- matches the other toolbar buttons' click-to-act
+    // shape rather than introducing a <select>, which the rest of the
+    // toolbar has none of.
+    this.qualityButton = document.createElement('button');
+    this.qualityButton.type = 'button';
+    this.qualityButton.className = 'toolbar-button';
+    this.qualityButton.textContent = QUALITY_LABEL[this.qualityTier];
+    this.qualityButton.title = 'Cycle render quality (Low/Medium/High) — lower for a cooler/faster device';
+    this.qualityButton.addEventListener('click', () => {
+      const currentIndex = QUALITY_CYCLE.indexOf(this.qualityTier);
+      const next = QUALITY_CYCLE[(currentIndex + 1) % QUALITY_CYCLE.length] as QualityTier;
+      this.setQuality(next);
+      for (const listener of this.qualityListeners) listener(next);
+    });
+    this.root.appendChild(this.qualityButton);
+
     const exportButton = document.createElement('button');
     exportButton.type = 'button';
     exportButton.className = 'toolbar-button';
@@ -168,6 +206,10 @@ export class Toolbar {
     this.muteListeners.push(listener);
   }
 
+  onQualityChange(listener: QualityChangeListener): void {
+    this.qualityListeners.push(listener);
+  }
+
   onExportRequest(listener: ExportRequestListener): void {
     this.exportListeners.push(listener);
   }
@@ -203,6 +245,12 @@ export class Toolbar {
   /** Reflects the current city seed onto the seed input — used after a `.vxc` import restores a different seed. */
   setSeed(seed: string): void {
     this.seedInput.value = seed;
+  }
+
+  /** Reflects the current quality tier onto the button label — used both on startup (restoring the persisted tier) and after a click cycles it. */
+  setQuality(tier: QualityTier): void {
+    this.qualityTier = tier;
+    this.qualityButton.textContent = QUALITY_LABEL[tier];
   }
 
   private requestGenerate(rawSeed: string): void {
