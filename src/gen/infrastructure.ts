@@ -469,6 +469,130 @@ export function writeBridge(world: World, bridge: Bridge): void {
   writeBridgeWalkway(world, bridge);
 }
 
+/**
+ * Re-fences any bridge rail cell left open by a *different* bridge's walkway
+ * clear (Task 39). `writeBridgeWalkway`'s doc comment above explains why deck
+ * +rails must be written for every bridge before any bridge's walkway is
+ * cleared: it keeps a walkway-clear from ever being re-sealed by a rail
+ * written later. But that ordering has its own mirror-image gap — a walkway
+ * clear is deliberately unaware of which cells belong to some *other*
+ * bridge's rail band, so when bridge B's middle-lane column happens to cross
+ * bridge A's rail row (same junction geometry as this file's "crossing
+ * bridges" test suite), B's clear pass erases A's rail voxel there right
+ * along with whatever B itself owns at that cell. The result is a deck cell
+ * that is solid METAL at `level` with open air at `level + 1` — exactly what
+ * `NavGrid.buildElevatedLevel` reads as an ordinary walkable deck cell — but
+ * on one of A's own two *edge* rows, where a rail is supposed to stand
+ * between the deck and open space. A pedestrian NPC never walks there
+ * (`NavGrid` only marks a bridge's middle lane walkable), but a player who
+ * strafes onto that edge finds no rail and can step straight off into air.
+ *
+ * Run once, after *every* bridge's deck+rails and *every* bridge's walkway
+ * have been written (see `placeVerticalInfrastructure` in `CityGenerator.ts`),
+ * this scans each bridge's own two rail rows for a cell that should have a
+ * rail but doesn't, and restores it — *unless* that exact cell also lies on
+ * some *other* bridge's own solid deck body (its 1-wide middle lane,
+ * strictly within that bridge's own `width`/`depth` footprint — deliberately
+ * *not* including the two door cells one step beyond its ends). That is the
+ * genuine-junction case: another bridge's actual floor physically continues
+ * through this cell, so fencing it would wall off a real crossing a player
+ * needs to walk straight through — a regression this fix must not
+ * introduce. Elsewhere — including a cell reached only by another bridge's
+ * *door* corridor rather than its deck body — the rail is restored, because
+ * nothing real connects there: the door corridor is a 1-cell reach past
+ * that bridge's own floor for a *different* purpose (landing on the far
+ * tower's own threshold, filled in later by `writeSkyLobby`), not a second
+ * bridge's deck. Excluding door cells from the junction test specifically is
+ * what tells the false case (a stray door corridor incidentally grazing
+ * another bridge's rail row, deck genuinely absent) apart from the true one
+ * (an actual crossing deck): a door corridor's own `level` cell frequently
+ * isn't even that bridge's own solid floor yet at repair time (sky lobbies
+ * are written later in `placeVerticalInfrastructure`), so treating it as
+ * equivalent to real deck would restore rails inconsistently depending on
+ * pipeline ordering rather than on the geometry that actually matters.
+ *
+ * Honest scope note: this pass is defense-in-depth, not a live-bug repair.
+ * A 1000-seed audit found the fencing invariant already holds on every real
+ * generated city — actual crossings come out as symmetric plus-crossroads
+ * whose open lane arms are genuine junctions (bridge lanes are always
+ * centered via `laneStart`). The false-connection case this pass restores is
+ * only reachable with off-center overlaps current planning never emits; the
+ * pass exists so the invariant survives future bridge-planning changes.
+ *
+ * Chosen over the alternatives:
+ *  - Reordering the two existing passes further (e.g. per-bridge-pair-aware
+ *    clearing) would need every bridge to know about every *other* bridge's
+ *    footprint while clearing its own walkway, coupling a single-bridge
+ *    function to whatever else shares its world — exactly the kind of
+ *    interleaving `writeBridgeWalkway`'s own doc comment already rejected
+ *    once for the resealing bug.
+ *  - Making `writeBridgeWalkway` "rail-aware" (skip clearing a cell that
+ *    holds another bridge's rail) would need each bridge's clear pass to
+ *    check every other bridge's rail geometry inline, and still wouldn't
+ *    handle the case where the clear runs *before* the other bridge's rail
+ *    is even written (order otherwise doesn't matter for the clear itself).
+ *    A single self-contained post-pass over the finished world, run once
+ *    after all writes, needs no cross-bridge awareness during either
+ *    existing pass and is trivial to reason about in isolation.
+ */
+export function repairBridgeRailFencing(world: World, bridges: readonly Bridge[]): void {
+  for (const bridge of bridges) refenceBridge(world, bridge, bridges);
+}
+
+/** Re-fences one bridge's two rail rows/columns; see `repairBridgeRailFencing`. */
+function refenceBridge(world: World, bridge: Bridge, allBridges: readonly Bridge[]): void {
+  const { axis, x, z, width, depth } = bridge;
+
+  if (axis === 'x') {
+    for (let dx = 0; dx < width; dx++) {
+      refenceRailCell(world, bridge, allBridges, x + dx, z);
+      refenceRailCell(world, bridge, allBridges, x + dx, z + depth - 1);
+    }
+  } else {
+    for (let dz = 0; dz < depth; dz++) {
+      refenceRailCell(world, bridge, allBridges, x, z + dz);
+      refenceRailCell(world, bridge, allBridges, x + width - 1, z + dz);
+    }
+  }
+}
+
+/**
+ * Restores a single missing rail voxel at deck-edge cell `(x, bridge.level, z)`
+ * unless some *other* bridge's own walkway lane legitimately claims this
+ * exact cell (see `repairBridgeRailFencing`'s doc comment for why that's the
+ * right test rather than a geometric "is the far side walkable" probe).
+ */
+function refenceRailCell(world: World, bridge: Bridge, allBridges: readonly Bridge[], x: number, z: number): void {
+  const { level } = bridge;
+  if (world.getBlock(x, level, z) !== METAL) return; // not a deck cell at all
+  if (world.getBlock(x, level + 1, z) === NEON_CYAN) return; // rail already intact
+
+  const isGenuineJunction = allBridges.some((other) => other !== bridge && isOwnDeckLaneCell(other, x, z));
+  if (isGenuineJunction) return; // another bridge's real deck continues through here
+
+  world.setBlockRaw(x, level + 1, z, NEON_CYAN);
+}
+
+/**
+ * True if `(x, z)` is part of `bridge`'s own solid deck's middle lane —
+ * strictly within its own `width`/`depth` footprint, deliberately excluding
+ * the two door cells one step beyond each end that `writeBridgeWalkway` also
+ * clears (see `repairBridgeRailFencing`'s doc comment for why the door cells
+ * don't count as a "real deck continues here" signal). Kept geometry-only
+ * (no world reads) so it answers "does this bridge's own floor genuinely
+ * occupy this cell" regardless of what any other bridge's writes did there,
+ * or what order those writes ran in.
+ */
+function isOwnDeckLaneCell(bridge: Bridge, x: number, z: number): boolean {
+  const { axis, x: bx, z: bz, width, depth } = bridge;
+  if (axis === 'x') {
+    const midZ = bz + 1;
+    return z === midZ && x >= bx && x <= bx + width - 1;
+  }
+  const midX = bx + 1;
+  return x === midX && z >= bz && z <= bz + depth - 1;
+}
+
 // ---------------------------------------------------------------------------
 // Internal stair shafts (tower ground floor -> bridge level)
 // ---------------------------------------------------------------------------

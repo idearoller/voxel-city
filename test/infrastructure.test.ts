@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BuildingPlan } from '../src/gen/buildings';
 import { writeBuilding } from '../src/gen/buildings';
+import { generateCity } from '../src/gen/CityGenerator';
 import { District } from '../src/gen/districts';
 import {
   canElevatorAndStairShaftCoexist,
@@ -12,6 +13,7 @@ import {
   planStairSteps,
   planStreetlights,
   planWalkways,
+  repairBridgeRailFencing,
   stairShaftFootprintColumns,
   towerKey,
   writeBillboard,
@@ -299,6 +301,206 @@ describe('crossing bridges at a shared tower corner (deck+rails-before-walkway o
     // The interior lane cell one step past the door is resealed by xBridge's
     // rail -- this is the defect this suite's fix eliminates.
     expect(world.getBlock(midX, zBridge.level + 1, zBridge.z)).toBe(NEON_CYAN);
+  });
+});
+
+/**
+ * True if `(x, z)` is part of `bridge`'s own solid deck's middle lane --
+ * strictly within its own `width`/`depth` footprint. Mirrors
+ * `isOwnDeckLaneCell` in infrastructure.ts as an independent ground-truth
+ * check derived straight from each bridge's plan, for verifying
+ * `repairBridgeRailFencing`'s fenced-or-junction invariant without
+ * re-deriving the production code's own control flow.
+ */
+function isOwnDeckLaneCell(bridge: Bridge, x: number, z: number): boolean {
+  const { axis, x: bx, z: bz, width, depth } = bridge;
+  if (axis === 'x') {
+    const midZ = bz + 1;
+    return z === midZ && x >= bx && x <= bx + width - 1;
+  }
+  const midX = bx + 1;
+  return x === midX && z >= bz && z <= bz + depth - 1;
+}
+
+/** Asserts every one of every bridge's edge-row deck cells is either fenced (rail intact) or lies on some *other* bridge's own solid deck lane (a genuine junction). */
+function assertEveryEdgeCellFencedOrJunction(world: World, bridges: readonly Bridge[]): void {
+  for (const bridge of bridges) {
+    const { axis, level, x, z, width, depth } = bridge;
+
+    const edgeRows: Array<{ length: number; cellAt: (i: number) => { cx: number; cz: number } }> =
+      axis === 'x'
+        ? [
+            { length: width, cellAt: (i) => ({ cx: x + i, cz: z }) },
+            { length: width, cellAt: (i) => ({ cx: x + i, cz: z + depth - 1 }) },
+          ]
+        : [
+            { length: depth, cellAt: (i) => ({ cx: x, cz: z + i }) },
+            { length: depth, cellAt: (i) => ({ cx: x + width - 1, cz: z + i }) },
+          ];
+
+    for (const row of edgeRows) {
+      for (let i = 0; i < row.length; i++) {
+        const { cx, cz } = row.cellAt(i);
+        const isFenced = world.getBlock(cx, level + 1, cz) === NEON_CYAN;
+        if (isFenced) continue;
+
+        const isJunction = bridges.some((other) => other !== bridge && isOwnDeckLaneCell(other, cx, cz));
+        expect(
+          isJunction,
+          `deck edge cell (${cx},${level},${cz}) is unfenced and no other bridge's deck lane claims it`,
+        ).toBe(true);
+      }
+    }
+  }
+}
+
+describe('repairBridgeRailFencing (Task 39: bridge-overlap fencing artifact)', () => {
+  // A z-axis bridge's middle-lane column crosses an x-axis bridge's 3-wide
+  // rail band at two different rows, but only one of those rows is a real
+  // junction. `zBridge`'s own deck body starts at z=262, one cell *after*
+  // `xBridge`'s top rail row (z=261) -- so at z=261, `zBridge`'s walkway
+  // clear only ever reaches that cell via its 1-cell door corridor (the
+  // extension one step beyond its own deck, see `writeBridgeWalkway`), never
+  // via any real connecting floor. At z=263, by contrast, `zBridge`'s own
+  // deck body genuinely occupies the cell (262..280 includes 263): a real
+  // crossing. Both rows sit on `zBridge`'s single middle-lane column
+  // (x=173), so both get cleared to AIR by `zBridge`'s walkway pass -- but
+  // only the z=261 row is a defect (Task 39): a walkable METAL deck cell
+  // with an erased rail and nothing genuinely connecting past it.
+  const placeholderTower = tower({ x: 0, z: 0, width: 10, depth: 10, height: 80 });
+
+  const xBridge: Bridge = {
+    axis: 'x',
+    level: 30,
+    x: 148,
+    z: 261, // rail rows at z=261 (false connection) and z=263 (real junction)
+    width: 32,
+    depth: 3,
+    towerA: placeholderTower,
+    towerB: placeholderTower,
+  };
+
+  const zBridge: Bridge = {
+    axis: 'z',
+    level: 30,
+    x: 172,
+    z: 262, // deck body 262..280; door corridor reaches back to z=261
+    width: 3,
+    depth: 19,
+    towerA: placeholderTower,
+    towerB: placeholderTower,
+  };
+
+  const FALSE_CONNECTION_Z = 261; // xBridge's rail row reached only by zBridge's door corridor
+  const REAL_JUNCTION_Z = 263; // xBridge's rail row that is genuinely part of zBridge's own deck
+  const CROSSING_X = 173; // zBridge's middle-lane column
+
+  it('leaves both rows missing after deck+rails-then-walkway, before the repair pass runs (reproduces Task 39)', () => {
+    const world = new World();
+    for (const b of [xBridge, zBridge]) writeBridgeDeckAndRails(world, b);
+    for (const b of [xBridge, zBridge]) writeBridgeWalkway(world, b);
+
+    // Both of xBridge's rail rows at x=173 (zBridge's middle-lane column)
+    // were erased by zBridge's walkway clear -- one a false connection, one
+    // a real junction, indistinguishable by this snapshot alone.
+    expect(world.getBlock(CROSSING_X, 31, FALSE_CONNECTION_Z)).toBe(AIR);
+    expect(world.getBlock(CROSSING_X, 31, REAL_JUNCTION_Z)).toBe(AIR);
+    // Yet the deck itself is untouched, solid METAL at both -- a walkable
+    // cell per `NavGrid`'s rule, with nothing fencing either outer edge.
+    expect(world.getBlock(CROSSING_X, 30, FALSE_CONNECTION_Z)).toBe(METAL);
+    expect(world.getBlock(CROSSING_X, 30, REAL_JUNCTION_Z)).toBe(METAL);
+  });
+
+  it('restores the rail at the false connection but leaves the real junction open, for either bridge array order', () => {
+    for (const order of [
+      [xBridge, zBridge],
+      [zBridge, xBridge],
+    ]) {
+      const world = new World();
+      for (const b of order) writeBridgeDeckAndRails(world, b);
+      for (const b of order) writeBridgeWalkway(world, b);
+      repairBridgeRailFencing(world, order);
+
+      expect(world.getBlock(CROSSING_X, 31, FALSE_CONNECTION_Z)).toBe(NEON_CYAN);
+      expect(world.getBlock(CROSSING_X, 31, REAL_JUNCTION_Z)).toBe(AIR);
+    }
+  });
+
+  it('never re-fences zBridge\'s own genuine walkway/door opening at its far end (untouched by the crossing, so nothing should ever fence it)', () => {
+    const world = new World();
+    for (const b of [xBridge, zBridge]) writeBridgeDeckAndRails(world, b);
+    for (const b of [xBridge, zBridge]) writeBridgeWalkway(world, b);
+    repairBridgeRailFencing(world, [xBridge, zBridge]);
+
+    const midX = zBridge.x + 1;
+    // southTower's door threshold (one past zBridge's own deck) and the
+    // interior lane cell right before it -- nowhere near xBridge's rail
+    // band, so this is a plain sanity check that repair never touches an
+    // ordinary bridge's own walkway.
+    for (const z of [zBridge.z + zBridge.depth - 1, zBridge.z + zBridge.depth]) {
+      expect(world.getBlock(midX, zBridge.level + 1, z)).toBe(AIR);
+      expect(world.getBlock(midX, zBridge.level + 2, z)).toBe(AIR);
+    }
+  });
+
+  it('satisfies the fenced-or-junction invariant across the whole crossing, for either bridge array order', () => {
+    for (const order of [
+      [xBridge, zBridge],
+      [zBridge, xBridge],
+    ]) {
+      const world = new World();
+      for (const b of order) writeBridgeDeckAndRails(world, b);
+      for (const b of order) writeBridgeWalkway(world, b);
+      repairBridgeRailFencing(world, order);
+
+      assertEveryEdgeCellFencedOrJunction(world, order);
+    }
+  });
+
+  it('does not touch a lone bridge with no crossing (no other rail was ever erased, so nothing to restore)', () => {
+    const towerA = tower({ x: 0, z: 0, width: 10, depth: 10, height: 60 });
+    const towerB = tower({ x: 20, z: 0, width: 10, depth: 10, height: 60 });
+    let bridge: Bridge | null = null;
+    for (let i = 0; i < 100 && !bridge; i++) {
+      const bridges = planBridges([towerA, towerB], createRng(`refence-lone-${i}`));
+      if (bridges.length > 0) bridge = bridges[0]!;
+    }
+    expect(bridge).not.toBeNull();
+    const b = bridge!;
+
+    const world = new World();
+    writeBridge(world, b);
+    repairBridgeRailFencing(world, [b]);
+
+    for (let dx = 0; dx < b.width; dx++) {
+      for (const railZ of [b.z, b.z + b.depth - 1]) {
+        expect(world.getBlock(b.x + dx, b.level + 1, railZ)).toBe(NEON_CYAN);
+      }
+    }
+  });
+
+  it('holds the fenced-or-junction invariant across every bridge in several fully generated cities', () => {
+    const seeds = ['fencing-invariant-1', 'fencing-invariant-2', 'fencing-invariant-3', 'fencing-invariant-4', 'fencing-invariant-5'];
+    let bridgesChecked = 0;
+
+    for (const seed of seeds) {
+      const world = new World();
+      const { bridges } = generateCity(world, seed);
+
+      assertEveryEdgeCellFencedOrJunction(world, bridges);
+      bridgesChecked += bridges.length;
+    }
+
+    // Neutralize check: if these seeds stopped producing any bridges at all,
+    // the assertions above would be vacuously true and this test would pass
+    // for the wrong reason.
+    expect(bridgesChecked).toBeGreaterThan(0);
+
+    // Scope note: this test does NOT guard the repairBridgeRailFencing wiring
+    // in CityGenerator — on current real seeds the invariant holds even with
+    // that pass disabled (real crossings are symmetric genuine junctions).
+    // The repair function itself is covered by the direct unit tests above;
+    // this test pins the city-wide invariant, whatever enforces it.
   });
 });
 

@@ -18,6 +18,7 @@ import {
   planStairShafts,
   planStreetlights,
   planWalkways,
+  repairBridgeRailFencing,
   stairShaftFootprintColumns,
   towerKey,
   writeBillboard,
@@ -130,6 +131,14 @@ function placeVerticalInfrastructure(
   // mechanism this ordering fixes.
   for (const bridge of bridges) writeBridgeDeckAndRails(world, bridge);
   for (const bridge of bridges) writeBridgeWalkway(world, bridge);
+
+  // Third pass, after every bridge's deck+rails and every bridge's walkway
+  // are in place: re-fence any rail cell one bridge's walkway clear erased
+  // from a *different* bridge's rail band at a crossing (Task 39). See
+  // `repairBridgeRailFencing`'s doc comment in infrastructure.ts for the full
+  // mechanism and why this needs its own pass rather than folding into
+  // either loop above.
+  repairBridgeRailFencing(world, bridges);
 
   const stairShafts = planStairShafts(bridges);
   for (const shaft of stairShafts) writeStairShaft(world, shaft);
