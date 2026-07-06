@@ -1218,19 +1218,48 @@ function elevatorTopDeckY(building: BuildingPlan, x: number, z: number): number 
 /**
  * Ascending "deck Y" floor levels the shaft serves: the city-wide ground
  * surface (one below `baseY`, same convention `paintGround` uses) plus every
- * tier boundary up to and including `elevatorTopDeckY`. Each entry is a solid
- * floor row; a rider's feet stand at `deckY + 1` (matching `Bridge.level` /
- * `SkyLobby.y`'s "solid floor at Y, walkable at Y+1" convention elsewhere in
- * this module).
+ * distinct level (ascending, deduped) this specific tower has a real bridge
+ * at (`bridge.towerA`/`towerB` matching `building`), restricted to levels the
+ * shaft's own footprint can still physically reach (`elevatorTopDeckY`).
+ * Each entry is a solid floor row; a rider's feet stand at `deckY + 1`
+ * (matching `Bridge.level` / `SkyLobby.y`'s "solid floor at Y, walkable at
+ * Y+1" convention elsewhere in this module).
+ *
+ * This used to walk every massing-tier boundary instead (`building.tiers`)
+ * -- geometrically real floors, but essentially never the *specific* rows
+ * `entities/NavGrid.ts` actually recognizes as walkable (`WALKWAY_Y`/
+ * `SKY_LEVELS`, and even then only where a real `SkyLobby` or bridge deck
+ * exists). A tower's own tier boundaries almost never coincide with those
+ * fixed rows, so every non-ground stop a shaft used to get was, in practice,
+ * unreachable by any pedestrian or the tour walker -- measured on real
+ * generated cities as a hard zero (Sam's Task 41 review: 40,000-tick soaks
+ * across 5 seeds produced zero eligible arrivals and zero rides). Anchoring
+ * to `bridge.level` instead means every non-ground stop is backed by a real
+ * `SkyLobby` floor (see `planSkyLobbies`), connected into that level's
+ * walkable interior the exact same way a bridge's own stair top is -- so a
+ * `TourElevatorRide` (or a play-mode rider) that reaches this stop finds
+ * real, NavGrid-recognized floor on the other side of the doorway, not a
+ * disconnected slab.
+ *
+ * A tower with no bridges at all now yields a shaft with just the ground
+ * stop, which `elevators/ElevatorScanner.ts`'s `MIN_STOPS_FOR_FUNCTIONAL_SHAFT`
+ * already treats as non-functional -- correct, not a regression: an
+ * elevator that goes nowhere real shouldn't register as rideable at all.
+ * `writeElevatorShaft` still writes the shell regardless (harmless unused
+ * geometry, not a bug); it just won't scan as a usable shaft.
  */
-function elevatorDeckYs(building: BuildingPlan, x: number, z: number): number[] {
+function elevatorDeckYs(building: BuildingPlan, x: number, z: number, bridges: readonly Bridge[]): number[] {
   const topDeckY = elevatorTopDeckY(building, x, z);
   const deckYs = [building.baseY - 1];
-  for (const tier of building.tiers) {
-    const absY = building.baseY + tier.yEnd;
-    if (absY > topDeckY) break;
-    deckYs.push(absY);
+
+  const skyLevels = new Set<number>();
+  for (const bridge of bridges) {
+    if (bridge.towerA !== building && bridge.towerB !== building) continue;
+    if (bridge.level > topDeckY) continue;
+    skyLevels.add(bridge.level);
   }
+  for (const level of Array.from(skyLevels).sort((a, b) => a - b)) deckYs.push(level);
+
   return deckYs;
 }
 
@@ -1337,10 +1366,17 @@ function pickDoorEdge(
  * planned deck row (the original approach) missed that: the housing rows
  * aren't a deck, so the well stayed solid there, `ElevatorScanner` saw a
  * non-hollow well, and silently dropped the entire shaft.
+ *
+ * `bridges` defaults to empty for callers (chiefly this file's own tests)
+ * that only care about a bare ground-stop shaft and don't want to build a
+ * full bridge/sky-lobby fixture — same convention `planElevatorShafts`
+ * already uses for the same reason. Passed through unchanged to
+ * `elevatorDeckYs`, which is where it actually matters (see that function's
+ * doc comment).
  */
-export function writeElevatorShaft(world: World, marker: ElevatorShaftMarker): void {
+export function writeElevatorShaft(world: World, marker: ElevatorShaftMarker, bridges: readonly Bridge[] = []): void {
   const { building, x, z } = marker;
-  const deckYs = elevatorDeckYs(building, x, z);
+  const deckYs = elevatorDeckYs(building, x, z, bridges);
   const topDeckY = deckYs[deckYs.length - 1] as number;
   const wallTopY = topDeckY + ELEVATOR_HOUSING_ROWS;
 

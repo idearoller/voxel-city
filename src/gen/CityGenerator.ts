@@ -154,7 +154,10 @@ function placeVerticalInfrastructure(
     bridges.flatMap((bridge) => [towerKey(bridge.towerA), towerKey(bridge.towerB)]),
   );
   const elevatorShafts = planElevatorShafts(buildings, rng.fork('elevators'), stairTowerKeys, bridges);
-  for (const marker of elevatorShafts) writeElevatorShaft(world, marker);
+  // `bridges` threaded through so a shaft's non-ground stops land exactly on
+  // this tower's own sky-lobby levels (see `elevatorDeckYs`'s doc comment) --
+  // real NavGrid-walkable landings, not arbitrary tier boundaries.
+  for (const marker of elevatorShafts) writeElevatorShaft(world, marker, bridges);
 
   const walkways = planWalkways(layout, BUILDING_BASE_Y);
   for (const walkway of walkways) writeWalkway(world, walkway);

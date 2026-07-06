@@ -7,8 +7,13 @@
 
 import type { ElevatorShaft } from './ElevatorScanner';
 
-/** Vertical travel speed, in world units (voxels) per second. */
-const ELEVATOR_SPEED = 3;
+/**
+ * Vertical travel speed, in world units (voxels) per second. Exported so
+ * `player/TourElevatorRide.ts` can size its own teleport-safety margin around
+ * the same real per-tick vertical displacement a rider is carried at, rather
+ * than duplicating this number.
+ */
+export const ELEVATOR_SPEED = 3;
 
 export interface ElevatorCarState {
   /** Current platform surface Y (world coordinate a rider's feet rest at). */

@@ -991,15 +991,26 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     expect(world.getBlock(3, t.baseY, 2)).toBe(AIR);
   });
 
-  it('writes a hollow 3x3 shaft of ELEVATOR_SHAFT wall blocks from ground to roof', () => {
+  /** Minimal `Bridge` referencing `tower` at `level` for both ends -- `elevatorDeckYs`/`planSkyLobbies` only ever care about tower-membership and `level`, never the deck's own x/z/width/axis, so these are harmless placeholders. */
+  function bridgeAtLevel(tower: BuildingPlan, level: number): Bridge {
+    return { axis: 'x', level, x: 0, z: 0, width: 3, depth: 3, towerA: tower, towerB: tower };
+  }
+
+  it('writes a hollow 3x3 shaft of ELEVATOR_SHAFT wall blocks up through its topmost stop', () => {
     const t = tower({ x: 0, z: 0, width: 10, depth: 10, height: 40 });
+    // A real bridge level (well below the roof, comfortably above baseY+10)
+    // gives this shaft a non-ground stop at all -- see `elevatorDeckYs`'s doc
+    // comment: without one, a shaft's shell no longer automatically reaches
+    // the roof, since non-ground stops are now anchored to real sky-lobby
+    // levels rather than tier boundaries.
+    const bridges = [bridgeAtLevel(t, 30)];
     let written = false;
     for (let i = 0; i < 30 && !written; i++) {
       const markers = planElevatorShafts([t], createRng(`elevator-write-${i}`), new Set());
       if (markers.length === 0) continue;
       const marker = markers[0]!;
       const world = new World();
-      writeElevatorShaft(world, marker);
+      writeElevatorShaft(world, marker, bridges);
       // Perimeter is ELEVATOR_SHAFT at a plain mid-shaft row (not a door row)...
       expect(world.getBlock(marker.x, t.baseY + 10, marker.z)).toBe(ELEVATOR_SHAFT);
       // ...and the center column stays hollow (air), an open shaft well.
@@ -1009,8 +1020,10 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
     expect(written).toBe(true);
   });
 
-  it('carves a rideable ground-to-roof shaft: door openings at every stop, well punched clear through each deck', () => {
-    const t = tower({ x: 0, z: 0, width: 10, depth: 10, height: 40 }); // single-tier (<= SETBACK_MIN_HEIGHT): stops are exactly ground + roof
+  it('carves a rideable ground-to-sky-lobby shaft: door openings at every stop, well punched clear through each deck', () => {
+    const t = tower({ x: 0, z: 0, width: 10, depth: 10, height: 40 });
+    const deckLevel = 30; // this tower's one real bridge/sky-lobby level -- see `elevatorDeckYs`'s doc comment.
+    const bridges = [bridgeAtLevel(t, deckLevel)];
     let written = false;
     for (let i = 0; i < 30 && !written; i++) {
       const markers = planElevatorShafts([t], createRng(`elevator-stops-${i}`), new Set());
@@ -1019,17 +1032,19 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
       const world = new World();
       // Real footing everywhere `writeElevatorShaft` would run in the actual
       // pipeline: the citywide ground surface (`CityGenerator.paintGround`)
-      // one row below baseY, and the tower's own shell/roof deck
-      // (`writeBuilding` always runs before elevator shafts in
-      // `placeVerticalInfrastructure`) — `pickDoorEdge` now requires genuine
-      // footing behind a doorway, not just open air.
+      // one row below baseY, the tower's own shell (`writeBuilding` always
+      // runs before elevator shafts in `placeVerticalInfrastructure`), and
+      // this tower's own sky-lobby floor at `deckLevel` (`placeVerticalInfrastructure`
+      // also always writes sky lobbies before elevator shafts) — `pickDoorEdge`
+      // now requires genuine footing behind a doorway, not just open air.
       for (let x = -2; x < 12; x++) {
         for (let z = -2; z < 12; z++) {
           world.setBlockRaw(x, t.baseY - 1, z, CONCRETE);
         }
       }
       writeBuilding(world, t);
-      writeElevatorShaft(world, marker);
+      for (const lobby of planSkyLobbies(bridges)) writeSkyLobby(world, lobby);
+      writeElevatorShaft(world, marker, bridges);
 
       const wellX = marker.x + 1;
       const wellZ = marker.z + 1;
@@ -1040,7 +1055,7 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
       // unenterable/unexitable elevator at every stop).
       const doorX = marker.x + 1;
       const doorZ = marker.z + 2;
-      const roofDeckY = t.baseY + t.height;
+      const skyLobbyDeckY = t.baseY + deckLevel;
 
       // Ground doorway (2 voxels tall) into the shaft's well, plus neon frame posts either side.
       for (const y of [t.baseY, t.baseY + 1]) {
@@ -1054,9 +1069,9 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
         expect(world.getBlock(marker.x + 1, y, marker.z)).toBe(ELEVATOR_SHAFT);
       }
 
-      // Roof deck: the well is punched clear through the floor, and the roof doorway is carved the same way.
-      expect(world.getBlock(wellX, roofDeckY, wellZ)).toBe(AIR);
-      for (const y of [roofDeckY + 1, roofDeckY + 2]) {
+      // Sky-lobby deck: the well is punched clear through the floor, and the deck's own doorway is carved the same way.
+      expect(world.getBlock(wellX, skyLobbyDeckY, wellZ)).toBe(AIR);
+      for (const y of [skyLobbyDeckY + 1, skyLobbyDeckY + 2]) {
         expect(world.getBlock(doorX, y, doorZ)).toBe(AIR);
       }
 
@@ -1066,7 +1081,7 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
   });
 
   it('never lets the shaft rise past the highest tier whose footprint still contains it', () => {
-    // Upper tier is inset by 3 on every side, well past the shaft's 1-voxel margin from tier0's corner -> shaft can only reach tier0's own boundary.
+    // Upper tier is inset by 3 on every side, well past the shaft's 1-voxel margin from tier0's corner -> shaft can only reach tier0's own boundary (baseY + 30).
     const t = tower({
       x: 0,
       z: 0,
@@ -1078,21 +1093,31 @@ describe('planElevatorShafts / writeElevatorShaft', () => {
         { yStart: 30, yEnd: 60, x: 3, z: 3, width: 14, depth: 14 },
       ],
     });
+    // Two bridge levels: 20 sits within tier0's own reach (a legitimate
+    // stop); 50 sits inside tier1's range, which the shaft's footprint does
+    // NOT survive into -- `elevatorDeckYs` must exclude it even though the
+    // bridge itself is real, proving the cap is genuinely about footprint
+    // containment (`elevatorTopDeckY`), not merely "no bridges above the
+    // ground floor."
+    const bridges = [bridgeAtLevel(t, 20), bridgeAtLevel(t, 50)];
     let written = false;
     for (let i = 0; i < 30 && !written; i++) {
       const markers = planElevatorShafts([t], createRng(`elevator-cap-${i}`), new Set());
       if (markers.length === 0) continue;
       const marker = markers[0]!;
       const world = new World();
-      writeElevatorShaft(world, marker);
+      writeElevatorShaft(world, marker, bridges);
 
       const wellX = marker.x + 1;
       const wellZ = marker.z + 1;
-      const tier0DeckY = t.baseY + 30;
 
-      // The shaft stops at tier0's own boundary — its well is punched through that deck...
-      expect(world.getBlock(wellX, tier0DeckY, wellZ)).toBe(AIR);
-      // ...but the wall tube never extends up to the (unreachable) true roof at all.
+      // The included stop (level 20) gets a real doorway/well punch...
+      expect(world.getBlock(wellX, 20, wellZ)).toBe(AIR);
+      expect(world.getBlock(marker.x, 20, marker.z)).toBe(ELEVATOR_SHAFT); // a plain wall row right there, confirming the tube itself reaches this high
+      // ...but the excluded level (50, inside the non-containing tier1) never
+      // becomes a stop at all -- the wall tube doesn't even reach that high...
+      expect(world.getBlock(marker.x, 50, marker.z)).toBe(AIR);
+      // ...nor does it extend up to the (unreachable) true roof.
       expect(world.getBlock(marker.x, t.baseY + t.height, marker.z)).toBe(AIR);
       written = true;
     }

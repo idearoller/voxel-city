@@ -194,7 +194,11 @@ function scheduleEnvironmentRefresh(): void {
 }
 
 const lookControls = new LookControls(engine.camera, canvas);
-const modeManager = new ModeManager(engine.camera, world, lookControls);
+// `elevatorSystem` itself already satisfies `TourElevatorPort` structurally
+// (shaftAt/supportAt/callElevator) -- no adapter needed, see
+// `player/TourElevatorRide.ts`'s doc comment on why that port stays this
+// narrow.
+const modeManager = new ModeManager(engine.camera, world, lookControls, elevatorSystem);
 modeManager.setSupportProvider((feet) => elevatorSystem.supportAt(feet));
 // Tour mode's auto-walking camera needs the city's current NavGrid (rebuilt
 // on every generation/import, see EntitySystem.rebuild) -- wired as a

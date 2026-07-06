@@ -10,6 +10,11 @@ function shaft(overrides: Partial<ElevatorShaft> = {}): ElevatorShaft {
     minY: 2,
     maxY: 40,
     stops: [2, 20, 41],
+    doorCells: [
+      { x: 9, z: 20 },
+      { x: 9, z: 20 },
+      { x: 9, z: 20 },
+    ],
     ...overrides,
   };
 }

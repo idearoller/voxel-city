@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { BuildingPlan } from '../src/gen/buildings';
 import { writeBuilding } from '../src/gen/buildings';
 import { District } from '../src/gen/districts';
-import { planElevatorShafts, writeElevatorShaft, type ElevatorShaftMarker } from '../src/gen/infrastructure';
+import {
+  planElevatorShafts,
+  planSkyLobbies,
+  writeElevatorShaft,
+  writeSkyLobby,
+  type Bridge,
+  type ElevatorShaftMarker,
+} from '../src/gen/infrastructure';
 import { createRng } from '../src/gen/rng';
 import { scanElevatorShafts, type ElevatorShaft } from '../src/elevators/ElevatorScanner';
 import { ElevatorSimulation } from '../src/elevators/ElevatorSimulation';
@@ -101,13 +108,27 @@ function tower(overrides: Partial<BuildingPlan> = {}): BuildingPlan {
   };
 }
 
+/** Minimal `Bridge` referencing `tower` at `level` for both ends -- `elevatorDeckYs`/`planSkyLobbies` only ever care about tower-membership and `level`, never the deck's own x/z/width/axis, so these are harmless placeholders. */
+function bridgeAtLevel(tower: BuildingPlan, level: number): Bridge {
+  return { axis: 'x', level, x: 0, z: 0, width: 3, depth: 3, towerA: tower, towerB: tower };
+}
+
+/** Writes the real `SkyLobby` floor for every `bridges` entry -- the footing `pickDoorEdge` requires behind a non-ground doorway, exactly as `placeVerticalInfrastructure` does before `writeElevatorShaft` in the real pipeline. */
+function writeLobbiesFor(world: World, bridges: readonly Bridge[]): void {
+  for (const lobby of planSkyLobbies(bridges)) writeSkyLobby(world, lobby);
+}
+
 /**
  * A tower with a functional elevator shaft and, deliberately, no stair shaft
- * at all — the roof interior is reachable *only* by riding the elevator.
+ * at all — the deck interior is reachable *only* by riding the elevator.
  * Mirrors the real generator's ground-surface convention (solid at
- * baseY - 1) just enough for the ground stop to have real footing.
+ * baseY - 1) just enough for the ground stop to have real footing, and
+ * writes a real `SkyLobby` floor at `deckLevel` so that stop has real
+ * footing (and real connected floor to flood-fill into) too -- see
+ * `elevatorDeckYs`'s doc comment for why a shaft's non-ground stops are now
+ * anchored to real bridge levels rather than arbitrary tier boundaries.
  */
-function buildIsolatedTowerWithElevator(): { world: World; shaft: ElevatorShaft; baseY: number; roofFeetY: number } {
+function buildIsolatedTowerWithElevator(deckLevel = 30): { world: World; shaft: ElevatorShaft; baseY: number; deckFeetY: number } {
   const height = 40;
   const t = tower({ x: 0, z: 0, width: 10, depth: 10, height });
   const world = new World();
@@ -119,13 +140,16 @@ function buildIsolatedTowerWithElevator(): { world: World; shaft: ElevatorShaft;
   }
   writeBuilding(world, t);
 
+  const bridges = [bridgeAtLevel(t, deckLevel)];
+  writeLobbiesFor(world, bridges);
+
   for (let i = 0; i < 30; i++) {
     const markers = planElevatorShafts([t], createRng(`ride-fixture-${i}`), new Set());
     if (markers.length === 0) continue;
-    writeElevatorShaft(world, markers[0]!);
+    writeElevatorShaft(world, markers[0]!, bridges);
     const shafts = scanElevatorShafts(world);
     const shaft = shafts[0] as ElevatorShaft;
-    return { world, shaft, baseY: t.baseY, roofFeetY: t.baseY + height + 1 };
+    return { world, shaft, baseY: t.baseY, deckFeetY: deckLevel + 1 };
   }
   throw new Error('failed to roll an elevator marker across 30 seeds');
 }
@@ -155,7 +179,7 @@ function tickRider(
 }
 
 describe('elevator ride: player-carry + only-reachable-by-elevator connectivity', () => {
-  it('carries the rider smoothly from the ground stop to the roof stop with no fall-through and no clipping', () => {
+  it('carries the rider smoothly from the ground stop to the sky-lobby deck stop with no fall-through and no clipping', () => {
     const { world, shaft } = buildIsolatedTowerWithElevator();
 
     // Sanity check *before* riding: the ground stop's doorway must actually
@@ -175,7 +199,7 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
     let feet: readonly [number, number, number] = [shaft.wellX + 0.5, shaft.stops[0] as number, shaft.wellZ + 0.5];
     let velocityY = 0;
 
-    sim.call(shaft, 1); // call the car up to the next (roof) stop
+    sim.call(shaft, 1); // call the car up to the next (sky-lobby deck) stop
 
     for (let i = 0; i < 60 * 30; i++) {
       sim.update(TICK);
@@ -206,12 +230,12 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
     expect(feet[1]).toBeCloseTo(finalCar.feetY, 5);
 
     // Having arrived, the rider can walk out onto the (only-elevator-reachable)
-    // roof floor cleanly — proven the same way as the ground stop: flood-fill
-    // from the platform through the doorway must reach a real interior floor,
-    // not a sealed pocket.
-    const roofReach = floodFillStandableCount(world, { x: shaft.wellX, z: shaft.wellZ }, finalCar.feetY);
-    expect(roofReach).toBeGreaterThan(SEALED_POCKET_CEILING);
-    expect(roofReach).toBeGreaterThanOrEqual(REAL_INTERIOR_FLOOR);
+    // sky-lobby deck floor cleanly — proven the same way as the ground stop:
+    // flood-fill from the platform through the doorway must reach a real
+    // interior floor, not a sealed pocket.
+    const deckReach = floodFillStandableCount(world, { x: shaft.wellX, z: shaft.wellZ }, finalCar.feetY);
+    expect(deckReach).toBeGreaterThan(SEALED_POCKET_CEILING);
+    expect(deckReach).toBeGreaterThanOrEqual(REAL_INTERIOR_FLOOR);
   });
 
   it('flags a doorway carved on the perimeter-facing (north) edge as unenterable — the exact defect this shaft used to ship with', () => {
@@ -289,11 +313,19 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
     }
     writeBuilding(world, t);
 
+    // Tier1 (inset by 2) does NOT contain the shaft's fixed NW-corner
+    // footprint (its own origin at (2,2) starts past the shaft's leftmost
+    // column) -- so the shaft's reach caps at tier0's own boundary
+    // (baseY + 30). A bridge level of 20 sits safely within that cap and
+    // gives this tower a real, functional (2-stop) shaft to scan.
+    const bridges = [bridgeAtLevel(t, 20)];
+    writeLobbiesFor(world, bridges);
+
     let written = false;
     for (let i = 0; i < 30 && !written; i++) {
       const markers = planElevatorShafts([t], createRng(`inset2-regression-${i}`), new Set());
       if (markers.length === 0) continue;
-      writeElevatorShaft(world, markers[0]!);
+      writeElevatorShaft(world, markers[0]!, bridges);
       written = true;
     }
     expect(written).toBe(true);
@@ -333,6 +365,16 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
       ],
     });
 
+    // insetTwoTower's shaft reach caps at tier0's own boundary (baseY + 30,
+    // same as the regression test above); narrowUpperTierTower's *does*
+    // contain the shaft all the way to its own tier1 (a real tower-lobby
+    // level's worth of margin below its own top), so each gets a bridge
+    // level safely within its own actual reach.
+    const bridgeLevelByTower = new Map<BuildingPlan, number>([
+      [insetTwoTower, 20],
+      [narrowUpperTierTower, 35],
+    ]);
+
     for (const t of [insetTwoTower, narrowUpperTierTower]) {
       const world = new World();
       for (let x = t.x - 2; x < t.x + t.width + 2; x++) {
@@ -342,12 +384,15 @@ describe('elevator ride: player-carry + only-reachable-by-elevator connectivity'
       }
       writeBuilding(world, t);
 
+      const bridges = [bridgeAtLevel(t, bridgeLevelByTower.get(t) as number)];
+      writeLobbiesFor(world, bridges);
+
       let marker: ElevatorShaftMarker | null = null;
       for (let i = 0; i < 30 && !marker; i++) {
         const markers = planElevatorShafts([t], createRng(`setback-stops-${t.x}-${i}`), new Set());
         if (markers.length === 0) continue;
         marker = markers[0]!;
-        writeElevatorShaft(world, marker);
+        writeElevatorShaft(world, marker, bridges);
       }
       expect(marker).not.toBeNull();
 

@@ -33,6 +33,18 @@ export interface ElevatorShaft {
   readonly maxY: number;
   /** Ascending world-Y feet positions (floor level + 1) where a rideable doorway exists. */
   readonly stops: readonly number[];
+  /**
+   * World (x, z) of the doorway wall-cell itself, one per `stops` entry (same
+   * order/index) -- exactly one step from `wellX`/`wellZ`, in whichever of
+   * the 4 `EDGE_OFFSETS` directions that stop's doorway was carved through
+   * (see `deriveStops`). This is purely geometric, same "not semantic"
+   * caveat as `stops` itself: it identifies *where the opening is*, not
+   * whether real floor exists on the other side of it -- a caller planning a
+   * rider's board/exit point (see `player/TourElevatorRide.ts`) must still
+   * independently confirm nearby floor is actually walkable before treating
+   * it as a real landing.
+   */
+  readonly doorCells: ReadonlyArray<{ readonly x: number; readonly z: number }>;
 }
 
 /** The 8 (dx, dz) offsets of a 3x3 shaft's perimeter, relative to its (min-x, min-z) wall origin. */
@@ -157,8 +169,27 @@ function resolveVerticalExtent(
  * scanner to know the generator's own conventions instead of just reading
  * blocks back.
  */
-function deriveStops(world: World, ox: number, oz: number, minY: number, maxY: number): number[] {
+interface StopsAndDoors {
+  stops: number[];
+  doorCells: Array<{ x: number; z: number }>;
+}
+
+/**
+ * Alongside each stop's Y (see this function's original doc comment above
+ * `ElevatorShaft.doorCells`), also records that stop's doorway wall-cell in
+ * world (x, z): `openOffsets[0]` is one of `EDGE_OFFSETS`, i.e. `(ox+dx,
+ * oz+dz)` for some `(dx, dz)` -- and since `EDGE_OFFSETS` are exactly the 4
+ * ring cells orthogonally adjacent to the well at `(ox+1, oz+1)`, subtracting
+ * 1 from each of `dx`/`dz` gives the unit direction from the well through
+ * that wall cell, so `wellX/Z + (dx-1, dz-1)` is the wall cell itself -- one
+ * step from the well, matching the direction a rider would actually approach
+ * or exit from.
+ */
+function deriveStops(world: World, ox: number, oz: number, minY: number, maxY: number): StopsAndDoors {
   const stops: number[] = [];
+  const doorCells: Array<{ x: number; z: number }> = [];
+  const wellX = ox + 1;
+  const wellZ = oz + 1;
   let previousOpenKey: string | null = null;
 
   for (let y = minY; y <= maxY; y++) {
@@ -167,11 +198,13 @@ function deriveStops(world: World, ox: number, oz: number, minY: number, maxY: n
 
     if (currentKey !== null && currentKey !== previousOpenKey) {
       stops.push(y);
+      const [edgeDx, edgeDz] = openOffsets[0] as [number, number];
+      doorCells.push({ x: wellX + (edgeDx - 1), z: wellZ + (edgeDz - 1) });
     }
     previousOpenKey = currentKey;
   }
 
-  return stops;
+  return { stops, doorCells };
 }
 
 /**
@@ -209,10 +242,10 @@ export function scanElevatorShafts(world: World): ElevatorShaft[] {
     if (!extent) continue; // broken somewhere in its own recorded range -> not a currently-intact shaft
 
     const { minY, maxY } = extent;
-    const stops = deriveStops(world, ox, oz, minY, maxY);
+    const { stops, doorCells } = deriveStops(world, ox, oz, minY, maxY);
     if (stops.length < MIN_STOPS_FOR_FUNCTIONAL_SHAFT) continue;
 
-    shafts.push({ id: originKey, wellX: ox + 1, wellZ: oz + 1, minY, maxY, stops });
+    shafts.push({ id: originKey, wellX: ox + 1, wellZ: oz + 1, minY, maxY, stops, doorCells });
   }
 
   return shafts;

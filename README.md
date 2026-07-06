@@ -45,7 +45,7 @@ There are three modes — **Tab** cycles sandbox → play → tour → sandbox:
 | Remove voxel | Left click | Left click | — |
 | Place voxel | Right click | Right click | — |
 | Select block | Number keys 1-9/0, or mouse wheel | same | — |
-| Elevator up / down | — | E / Q (while standing in a shaft) | — |
+| Elevator up / down | — | E / Q (while standing in a shaft) | — (automatic, see below) |
 | Switch mode | Tab | Tab | Tab |
 | Mute / unmute ambient audio | M | M | M |
 
@@ -57,21 +57,49 @@ Tour mode drops you into a first-person camera that walks the city on its
 own, like one of the city's own pedestrian NPCs — picking a direction at
 every intersection, reversing at dead ends, and climbing stairs to/from
 skybridges and walkways exactly the way pedestrians already do (it walks the
-same navigation grid, see `src/player/TourWalker.ts`). Mouse look is the
-*only* input that does anything: WASD, jump, sprint, and voxel editing are
-all inert. Every visible trace of editing is hidden for the duration too —
-the aim-highlight box, the desktop crosshair, the block palette, and (on
-touch) the place/remove toggle button — rather than leaving a lever on
-screen that's silently disconnected. If the walker ever gets stranded (an
-isolated, unreachable patch of sidewalk), it quietly respawns somewhere else
-walkable and keeps going — touring never gets stuck. Entering tour starts
-the walk from wherever your camera already was; leaving it (Tab again) hands
-control back at that same spot, and restores whichever of the above the
-destination mode normally shows. If you let go of the mouse for a few
-seconds, the camera slowly, cinematically eases its own yaw around to face
-the direction the walker is heading (and gently levels the pitch) — the
-moment you move the mouse again, that hand-off cancels instantly and you're
-back in full control.
+same navigation grid, see `src/player/TourWalker.ts`). Every so often, when
+wandering brings it right up to a functional elevator whose next stop leads
+somewhere real (a sky lobby, an elevated walkway, a skybridge deck), it may
+also ride it up or down instead — the same car a play-mode rider would call
+with E/Q, at the same speed, with no teleporting (see
+`src/player/TourElevatorRide.ts`) — then resumes ordinary wandering on the
+new level. It'll occasionally walk itself over to the nearest elevator it can
+actually reach, if it hasn't ridden one in a while (see
+`src/player/TourElevatorExcursion.ts`) — without that, touring a large city
+could go an entire session without ever crossing paths with one, since a
+city's sidewalks form many separate networks that rarely connect to each
+other (no crosswalks between blocks), and a walker can only ever reach an
+elevator on its own network. Even so, it's an occasional detour, not a habit:
+touring still finds its way around mostly on foot and by stairs. Mouse look
+is the *only* input that does anything:
+WASD, jump, sprint, and voxel editing are all inert. Every visible trace of
+editing is hidden for the duration too — the aim-highlight box, the desktop
+crosshair, the block palette, and (on touch) the place/remove toggle button —
+rather than leaving a lever on screen that's silently disconnected. If the
+walker ever gets stranded (an isolated, unreachable patch of sidewalk), it
+quietly respawns somewhere else walkable and keeps going — touring never
+gets stuck; the same goes for a ride that can't proceed (the car isn't ready
+in time), which just walks itself back off and resumes wandering rather than
+waiting forever. Entering tour starts the walk from wherever your camera
+already was — with one deliberate, bounded exception: if that spot's own
+patch of sidewalk has no elevator it could ever reach (see above), it's
+occasionally (a minority of the time — see `SPAWN_NEAR_SHAFT_CHANCE` in
+`src/player/TourElevatorExcursion.ts`) started near a random working
+elevator instead, since otherwise that particular starting spot could never
+include a ride at all no matter how long the session runs. Whenever your own
+starting spot *can* eventually reach an elevator on its own, this never
+kicks in — you always start exactly where you were. Leaving tour (Tab again)
+hands control back at wherever the walker ended up — mid-ride included, in
+which case you're simply standing on the platform where it currently is —
+and restores whichever of the above the destination mode normally shows. If
+you let go of the mouse for a few seconds, the
+camera slowly, cinematically eases its own yaw around to face the direction
+the walker is heading (and gently levels the pitch) — the moment you move
+the mouse again, that hand-off cancels instantly and you're back in full
+control. (While riding, the walker's heading doesn't change — elevator
+travel is purely vertical — so auto-yaw simply keeps easing toward whichever
+way it was already facing when it boarded, rather than hunting for a new
+target mid-ride.)
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,

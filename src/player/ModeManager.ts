@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { FlyController } from './FlyController';
 import { PlayController, type SupportProviderFn } from './PlayController';
-import { findSpawnFeet } from './PlayerCollision';
+import { findSpawnFeet, isVoxelInsideSupport } from './PlayerCollision';
 import { TourController, type NavGridProvider, type TourLookPort } from './TourController';
+import type { TourElevatorPort } from './TourElevatorRide';
 import { WORLD_SIZE_Y } from '../world/coords';
 import type { World } from '../world/World';
 
@@ -36,6 +37,13 @@ export class ModeManager {
   private readonly playController: PlayController;
   private readonly tourController: TourController;
   private navGridProvider: NavGridProvider | null = null;
+  /**
+   * Mirrors whatever was last passed to `setSupportProvider` -- forwarded to
+   * `PlayController` as before, but also kept here so `findSpawn` can fold a
+   * moving support surface (e.g. an elevator platform) into its own ground
+   * scan. See `findSpawn`'s doc comment for why that matters.
+   */
+  private supportProvider: SupportProviderFn | null = null;
 
   constructor(
     private readonly camera: THREE.Camera,
@@ -47,10 +55,17 @@ export class ModeManager {
      * this is forwarded to unchanged.
      */
     lookControls?: TourLookPort,
+    /**
+     * Optional so every existing caller/test that constructs a `ModeManager`
+     * without wiring `ElevatorSystem` keeps working exactly as before — see
+     * `TourController`'s matching optional `elevatorPort` parameter, which
+     * this is forwarded to unchanged.
+     */
+    elevatorPort?: TourElevatorPort,
   ) {
     this.flyController = new FlyController(camera);
     this.playController = new PlayController(camera, world);
-    this.tourController = new TourController(camera, () => this.navGridProvider?.() ?? null, lookControls);
+    this.tourController = new TourController(camera, () => this.navGridProvider?.() ?? null, lookControls, elevatorPort);
     // Guarded so ModeManager can be constructed in non-browser contexts
     // (unit/integration tests) that drive mode transitions via
     // enterPlayMode()/enterSandboxMode() directly.
@@ -82,8 +97,9 @@ export class ModeManager {
     this.listeners.push(listener);
   }
 
-  /** Forwards to the play controller's moving-support wiring (see `PlayController.setSupportProvider`) — e.g. `ElevatorSystem.supportAt`. */
+  /** Forwards to the play controller's moving-support wiring (see `PlayController.setSupportProvider`) — e.g. `ElevatorSystem.supportAt` — and keeps a copy for `findSpawn` to use too. */
   setSupportProvider(provider: SupportProviderFn | null): void {
+    this.supportProvider = provider;
     this.playController.setSupportProvider(provider);
   }
 
@@ -223,9 +239,28 @@ export class ModeManager {
    * Tab-from-fly toggle it means "drop onto whatever is under me", which
    * correctly stops at a bridge/walkway deck below a sandbox-flying camera
    * instead of tunneling through it down to street level.
+   *
+   * Folds in whatever moving support (e.g. an elevator platform) currently
+   * occupies this column as a synthetic solid voxel, the same way
+   * `PlayController.update`'s own per-tick `isSolid` does (see its doc
+   * comment) — without this, entering play mode while mid elevator-ride
+   * (tour's walker riding one when Tab is pressed, see `TourElevatorRide.ts`)
+   * would scan straight through the shaft's intentionally-hollow well, past
+   * the platform actually visible at the camera's feet, all the way down to
+   * whatever solid floor is first found *below* it (or the safe-default
+   * fallback) — dropping the player far from where the camera visibly was.
+   * Landing on the platform itself (a "walkable-ish" spot, per the task's own
+   * "simplest correct answer" framing) is deliberately the whole fix: no
+   * attempt is made to instead land the player at either the ride's origin
+   * or destination doorway, which would need this method to know about an
+   * in-progress ride at all -- it doesn't, and doesn't need to.
    */
   private findSpawn(): readonly [number, number, number] {
-    const isSolid = (x: number, y: number, z: number): boolean => this.world.isSolid(x, y, z);
+    const isSolid = (x: number, y: number, z: number): boolean => {
+      if (this.world.isSolid(x, y, z)) return true;
+      const support = this.supportProvider?.([x, y, z]) ?? null;
+      return support !== null && isVoxelInsideSupport(x, y, z, support);
+    };
     const x = Math.floor(this.camera.position.x);
     const z = Math.floor(this.camera.position.z);
     const topY = Math.min(WORLD_SIZE_Y - 1, Math.ceil(this.camera.position.y));
