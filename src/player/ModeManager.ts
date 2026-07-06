@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { FlyController } from './FlyController';
 import { PlayController, type SupportProviderFn } from './PlayController';
 import { findSpawnFeet } from './PlayerCollision';
-import { TourController, type NavGridProvider } from './TourController';
+import { TourController, type NavGridProvider, type TourLookPort } from './TourController';
 import { WORLD_SIZE_Y } from '../world/coords';
 import type { World } from '../world/World';
 
@@ -23,8 +23,11 @@ export type ModeChangeListener = (mode: Mode) => void;
  * three). Sandbox drives the camera via FlyController; play drives it via
  * PlayController with gravity/collision; tour drives it via TourController,
  * an auto-walking pedestrian-like body on the city's NavGrid (see
- * `TourController.ts`) that only mouse look can steer. All three share the
- * same camera and LookControls instance owned by main.ts.
+ * `TourController.ts`) that only mouse look can steer -- and which, after a
+ * few idle seconds of no mouse look at all, gently eases that look toward
+ * the walker's own heading (see `TourController`'s `TourLookPort` and
+ * `TourAutoLook.ts`). All three share the same camera and LookControls
+ * instance owned by main.ts.
  */
 export class ModeManager {
   private mode: Mode = 'sandbox';
@@ -37,10 +40,17 @@ export class ModeManager {
   constructor(
     private readonly camera: THREE.Camera,
     private readonly world: World,
+    /**
+     * Optional so every existing caller/test that constructs a `ModeManager`
+     * without wiring `LookControls` keeps working exactly as before — see
+     * `TourController`'s matching optional `lookControls` parameter, which
+     * this is forwarded to unchanged.
+     */
+    lookControls?: TourLookPort,
   ) {
     this.flyController = new FlyController(camera);
     this.playController = new PlayController(camera, world);
-    this.tourController = new TourController(camera, () => this.navGridProvider?.() ?? null);
+    this.tourController = new TourController(camera, () => this.navGridProvider?.() ?? null, lookControls);
     // Guarded so ModeManager can be constructed in non-browser contexts
     // (unit/integration tests) that drive mode transitions via
     // enterPlayMode()/enterSandboxMode() directly.

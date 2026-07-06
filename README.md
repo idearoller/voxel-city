@@ -67,7 +67,11 @@ isolated, unreachable patch of sidewalk), it quietly respawns somewhere else
 walkable and keeps going — touring never gets stuck. Entering tour starts
 the walk from wherever your camera already was; leaving it (Tab again) hands
 control back at that same spot, and restores whichever of the above the
-destination mode normally shows.
+destination mode normally shows. If you let go of the mouse for a few
+seconds, the camera slowly, cinematically eases its own yaw around to face
+the direction the walker is heading (and gently levels the pitch) — the
+moment you move the mouse again, that hand-off cancels instantly and you're
+back in full control.
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,

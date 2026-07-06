@@ -32,6 +32,20 @@ export function shortestArcLerp(a: number, b: number, t: number): number {
 }
 
 /**
+ * Heading angle (radians) for an entity/camera whose current direction is
+ * (`dirX`, `dirZ`) -- `atan2`'s zero-vector convention (both axes 0, e.g. a
+ * pedestrian/tour walker at the instant of spawn before a first heading is
+ * chosen) resolves to 0 rad, i.e. facing +z, rather than `NaN`. Centralized
+ * here rather than duplicated per caller: `EntityRenderer` uses it for
+ * pedestrians/vehicles and `TourController` uses it to find the tour
+ * walker's current heading for idle cinematic auto-yaw, and both need the
+ * exact same zero-guard.
+ */
+export function headingFromDirection(dirX: number, dirZ: number): number {
+  return dirX !== 0 || dirZ !== 0 ? Math.atan2(dirX, dirZ) : 0;
+}
+
+/**
  * Generous multiplier above the `speed * dt` bound every entity step function
  * already enforces (see `stepPedestrian` / `stepVehicle` /
  * `stepFlyingVehicle`'s own `min(dist, speed * dt)` clamps), used by

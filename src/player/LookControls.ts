@@ -21,6 +21,8 @@ export class LookControls {
   private pitch = 0;
   /** Scratch `Euler` reused across every `applyDelta` call (mousemove fires far more often than once a frame) instead of allocated per call — nothing holds a reference to it past `setFromEuler`. */
   private readonly eulerScratch = new THREE.Euler(0, 0, 0, 'YXZ');
+  /** Set on every real mouse/touch look delta, drained by `consumeLookInput` — tour mode's idle cinematic auto-yaw (see `TourController`'s `TourLookPort`) polls this once per tick to detect real user input and immediately cancel/reset itself. */
+  private hasLookInputSincePreviousCheck = false;
 
   constructor(
     private readonly camera: THREE.Camera,
@@ -51,6 +53,37 @@ export class LookControls {
     return this.yaw;
   }
 
+  get pitchRadians(): number {
+    return this.pitch;
+  }
+
+  /**
+   * Returns whether any mouse-move or touch-drag look delta has been applied
+   * since the last call, then clears the flag (drain semantics — each tick
+   * of tour mode's idle-timer wiring gets its own fresh answer, not a
+   * once-ever "has this ever happened" latch).
+   */
+  consumeLookInput(): boolean {
+    const hadInput = this.hasLookInputSincePreviousCheck;
+    this.hasLookInputSincePreviousCheck = false;
+    return hadInput;
+  }
+
+  /**
+   * Directly sets yaw/pitch (clamping pitch exactly like real look input)
+   * and applies them to the camera. The only way anything outside real
+   * mouse/touch input moves the camera's rotation — used solely by tour
+   * mode's idle cinematic auto-yaw (`TourController`), which decides *when*
+   * and *what* to ease toward but never touches `camera.quaternion` itself;
+   * `LookControls` stays the sole owner of yaw/pitch state and the sole
+   * writer of the camera's rotation.
+   */
+  applyAutoYaw(yaw: number, pitch: number): void {
+    this.yaw = yaw;
+    this.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, pitch));
+    this.camera.quaternion.setFromEuler(this.eulerScratch.set(this.pitch, this.yaw, 0, 'YXZ'));
+  }
+
   private onMouseMove = (event: MouseEvent): void => {
     if (!this.isLocked) return;
     this.applyDelta(event.movementX, event.movementY, SENSITIVITY);
@@ -65,6 +98,7 @@ export class LookControls {
   }
 
   private applyDelta(deltaX: number, deltaY: number, sensitivity: number): void {
+    this.hasLookInputSincePreviousCheck = true;
     this.yaw -= deltaX * sensitivity;
     this.pitch -= deltaY * sensitivity;
     this.pitch = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, this.pitch));

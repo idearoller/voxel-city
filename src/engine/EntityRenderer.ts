@@ -8,7 +8,7 @@ import {
   vehicleGlowMaterial,
 } from './Materials';
 import type { FlyingVehicle } from '../entities/FlyingVehicle';
-import { lerp, shortestArcLerp } from '../entities/interpolation';
+import { headingFromDirection, lerp, shortestArcLerp } from '../entities/interpolation';
 import type { Pedestrian } from '../entities/Pedestrian';
 import type { Vehicle } from '../entities/Vehicle';
 
@@ -138,9 +138,9 @@ export class EntityRenderer {
     this.updateFlyingVehicles(flyingVehicles, alpha);
   }
 
-  /** Heading angle for an entity whose current direction is (`dirX`, `dirZ`), matching `atan2`'s zero-vector convention used throughout this class (0 rad, i.e. facing +z, at the instant of spawn before a first heading is chosen). */
+  /** Thin alias kept local to this class's call sites -- see `headingFromDirection`'s doc comment in `entities/interpolation.ts` for the zero-vector convention this shares with `TourController`. */
   private static headingOf(dirX: number, dirZ: number): number {
-    return dirX !== 0 || dirZ !== 0 ? Math.atan2(dirX, dirZ) : 0;
+    return headingFromDirection(dirX, dirZ);
   }
 
   private updatePedestrians(pedestrians: readonly Pedestrian[], elapsedTime: number, alpha: number): void {

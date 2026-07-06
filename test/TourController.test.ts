@@ -2,10 +2,45 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { buildNavGrid, type NavGrid } from '../src/entities/NavGrid';
 import { EYE_HEIGHT } from '../src/player/PlayController';
-import { TourController } from '../src/player/TourController';
+import { TourController, type TourLookPort } from '../src/player/TourController';
 import { TOUR_WALK_SPEED } from '../src/player/TourWalker';
 import { CONCRETE, SIDEWALK } from '../src/world/BlockRegistry';
 import { World } from '../src/world/World';
+
+/**
+ * Lightweight in-memory stand-in for `LookControls` -- exactly the
+ * `TourLookPort` surface, with a manual `pushLookInput` hook standing in for
+ * a real mouse-move/touch-drag event, so these tests can drive idle
+ * cinematic auto-yaw without a canvas or DOM listeners.
+ */
+class FakeLookControls implements TourLookPort {
+  yaw = 0;
+  pitch = 0;
+  private inputPending = false;
+
+  get yawRadians(): number {
+    return this.yaw;
+  }
+
+  get pitchRadians(): number {
+    return this.pitch;
+  }
+
+  consumeLookInput(): boolean {
+    const had = this.inputPending;
+    this.inputPending = false;
+    return had;
+  }
+
+  applyAutoYaw(yaw: number, pitch: number): void {
+    this.yaw = yaw;
+    this.pitch = pitch;
+  }
+
+  pushLookInput(): void {
+    this.inputPending = true;
+  }
+}
 
 const GROUND_Y = 1;
 const WIDTH = 20;
@@ -164,5 +199,87 @@ describe('TourController', () => {
     // the fallback origin.
     controller.render(0.5);
     expect(camera.position.y).toBeGreaterThan(0);
+  });
+
+  describe('idle cinematic auto-yaw', () => {
+    it('does nothing when constructed without a LookControls (existing callers keep working unchanged)', () => {
+      const camera = new THREE.PerspectiveCamera();
+      const controller = new TourController(camera, () => corridorGrid());
+      controller.start(2, 5);
+
+      for (let i = 0; i < 600; i++) controller.update(1 / 60);
+      controller.render(0.5);
+
+      expect(camera.quaternion.equals(new THREE.Quaternion())).toBe(true);
+    });
+
+    it('leaves LookControls untouched before the idle delay elapses', () => {
+      const camera = new THREE.PerspectiveCamera();
+      const lookControls = new FakeLookControls();
+      const controller = new TourController(camera, () => corridorGrid(), lookControls);
+      controller.start(2, 5);
+
+      for (let i = 0; i < 60; i++) controller.update(1 / 60); // 1s, well under the ~4s default idle delay
+
+      expect(lookControls.yaw).toBe(0);
+      expect(lookControls.pitch).toBe(0);
+    });
+
+    it('eases LookControls yaw toward the walker heading once idle long enough', () => {
+      const camera = new THREE.PerspectiveCamera();
+      const lookControls = new FakeLookControls();
+      lookControls.yaw = 0; // starts looking away from the corridor's axis entirely
+      // A long corridor, started from its middle, so the walker cannot reach
+      // either dead end (and reverse its heading) within this test's window
+      // -- isolates "eases toward the current heading" from "heading itself
+      // can later flip," which is covered by TourAutoLook.test.ts instead.
+      const controller = new TourController(camera, () => corridorGrid(400), lookControls);
+      controller.start(200, 5);
+
+      // The corridor runs along the x axis, so the walker's heading is
+      // either +x or -x (yaw = +-pi/2) depending on which way it happened to
+      // set off -- either way, yaw should ease toward +-pi/2, not stay at 0.
+      for (let i = 0; i < 1200; i++) controller.update(1 / 60); // 20s, comfortably past the default idle delay
+
+      expect(Math.abs(lookControls.yaw)).toBeCloseTo(Math.PI / 2, 1);
+      expect(Math.abs(lookControls.pitch)).toBeLessThan(1e-9); // pitch was already level; nothing to ease
+    });
+
+    it('real look input immediately cancels auto-yaw and keeps the idle timer from ever re-engaging while it keeps arriving', () => {
+      const camera = new THREE.PerspectiveCamera();
+      const lookControls = new FakeLookControls();
+      lookControls.yaw = -1.5;
+      const controller = new TourController(camera, () => corridorGrid(), lookControls);
+      controller.start(2, 5);
+
+      for (let i = 0; i < 600; i++) {
+        lookControls.pushLookInput(); // simulates the player continuously moving the mouse
+        controller.update(1 / 60);
+      }
+
+      // Auto-yaw never got a chance to touch the pose -- it's exactly what a
+      // real mouse-move would have left it at (unchanged by TourController).
+      expect(lookControls.yaw).toBe(-1.5);
+    });
+
+    it('resets the idle timer on every start(), so re-entering tour mode never inherits a stale near-threshold timer', () => {
+      const camera = new THREE.PerspectiveCamera();
+      const lookControls = new FakeLookControls();
+      lookControls.yaw = -1.5;
+      const controller = new TourController(camera, () => corridorGrid(), lookControls);
+      controller.start(2, 5);
+
+      // Idle almost to the threshold...
+      for (let i = 0; i < 239; i++) controller.update(1 / 60); // ~3.98s, just under the 4s default
+      expect(lookControls.yaw).toBe(-1.5);
+
+      // ...then restart touring (as ModeManager.enterTourMode does on every re-entry).
+      controller.start(2, 5);
+      lookControls.yaw = -1.5;
+
+      // A single further tick must not engage -- the idle timer restarted at start().
+      controller.update(1 / 60);
+      expect(lookControls.yaw).toBe(-1.5);
+    });
   });
 });

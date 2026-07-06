@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { isTeleportJump, lerp, shortestArcLerp, TELEPORT_SAFETY_FACTOR } from '../src/entities/interpolation';
+import {
+  headingFromDirection,
+  isTeleportJump,
+  lerp,
+  shortestArcLerp,
+  TELEPORT_SAFETY_FACTOR,
+} from '../src/entities/interpolation';
 
 describe('lerp', () => {
   it('interpolates linearly between two values', () => {
@@ -49,6 +55,19 @@ describe('shortestArcLerp', () => {
     const atOne = shortestArcLerp(3.0, -3.0, 1);
     expect(Math.sin(atOne)).toBeCloseTo(Math.sin(-3.0), 10);
     expect(Math.cos(atOne)).toBeCloseTo(Math.cos(-3.0), 10);
+  });
+});
+
+describe('headingFromDirection', () => {
+  it('resolves the zero vector to 0 rad (facing +z), matching atan2\'s spawn-instant convention', () => {
+    expect(headingFromDirection(0, 0)).toBe(0);
+  });
+
+  it('matches atan2(dirX, dirZ) for a nonzero direction', () => {
+    expect(headingFromDirection(1, 0)).toBeCloseTo(Math.PI / 2, 10);
+    expect(headingFromDirection(0, 1)).toBeCloseTo(0, 10);
+    expect(headingFromDirection(-1, 0)).toBeCloseTo(-Math.PI / 2, 10);
+    expect(headingFromDirection(0, -1)).toBeCloseTo(Math.PI, 10);
   });
 });
 
