@@ -60,7 +60,7 @@ export class TouchControlsUI {
     this.flyDownButton = this.makeButton(buttonBar, '▼', 'Fly down', 'touch-button-flydown');
     this.bindHold(this.flyDownButton, 'ShiftLeft');
 
-    const modeButton = this.makeButton(buttonBar, '⇄', 'Switch sandbox/play', 'touch-button-mode');
+    const modeButton = this.makeButton(buttonBar, '⇄', 'Switch mode', 'touch-button-mode');
     modeButton.addEventListener('click', () => this.callbacks.onModeToggle());
 
     this.editModeButton = this.makeButton(buttonBar, '−', 'Toggle place/remove', 'touch-button-editmode');
@@ -81,11 +81,19 @@ export class TouchControlsUI {
     this.root.classList.toggle('visible', visible);
   }
 
-  /** Swaps jump (play) for fly-up/fly-down (sandbox), mirroring the Hud's hint-line mode swap. */
+  /**
+   * Swaps jump (play) for fly-up/fly-down (sandbox), mirroring the Hud's
+   * hint-line mode swap. Also hides the place/remove edit toggle in tour
+   * mode: `main.ts` gates `performTouchEdit` off entirely once
+   * `currentMode === 'tour'` (mouse look is the only live input there, same
+   * as desktop — see `Hud`'s matching crosshair hide), so leaving this
+   * button visible would offer a lever connected to nothing.
+   */
   setMode(mode: Mode): void {
     this.jumpButton.classList.toggle('hidden', mode !== 'play');
     this.flyUpButton.classList.toggle('hidden', mode !== 'sandbox');
     this.flyDownButton.classList.toggle('hidden', mode !== 'sandbox');
+    this.editModeButton.classList.toggle('hidden', mode === 'tour');
   }
 
   /** Reflects current audio-muted state onto the mute button — same icon swap as `Toolbar.setMuted`. */

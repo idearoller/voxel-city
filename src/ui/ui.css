@@ -19,6 +19,10 @@
   box-shadow: 0 0 4px rgba(45, 245, 255, 0.8);
 }
 
+.hud-crosshair.hidden {
+  display: none;
+}
+
 .hud-mode {
   position: fixed;
   top: 16px;
@@ -112,6 +116,10 @@
   border: 1px solid var(--glass-border);
   border-radius: 10px;
   backdrop-filter: blur(8px);
+}
+
+.palette.hidden {
+  display: none;
 }
 
 .palette-swatch {

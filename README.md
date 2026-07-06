@@ -59,12 +59,15 @@ every intersection, reversing at dead ends, and climbing stairs to/from
 skybridges and walkways exactly the way pedestrians already do (it walks the
 same navigation grid, see `src/player/TourWalker.ts`). Mouse look is the
 *only* input that does anything: WASD, jump, sprint, and voxel editing are
-all inert, and the aim-highlight box is hidden the whole time since there's
-nothing to edit. If the walker ever gets stranded (an isolated, unreachable
-patch of sidewalk), it quietly respawns somewhere else walkable and keeps
-going — touring never gets stuck. Entering tour starts the walk from
-wherever your camera already was; leaving it (Tab again) hands control back
-at that same spot.
+all inert. Every visible trace of editing is hidden for the duration too —
+the aim-highlight box, the desktop crosshair, the block palette, and (on
+touch) the place/remove toggle button — rather than leaving a lever on
+screen that's silently disconnected. If the walker ever gets stranded (an
+isolated, unreachable patch of sidewalk), it quietly respawns somewhere else
+walkable and keeps going — touring never gets stuck. Entering tour starts
+the walk from wherever your camera already was; leaving it (Tab again) hands
+control back at that same spot, and restores whichever of the above the
+destination mode normally shows.
 
 Toolbar (top-left): seed field + **GENERATE** to (re)build the city from a
 seed, 🎲 for a random seed, **⏸ CYCLE** to pause/resume the day-night clock,
@@ -102,13 +105,13 @@ appears the moment you actually touch the screen):
 |---|---|
 | Move | Left half of the screen: touch down anywhere to spawn a floating joystick there, drag to move |
 | Look | Right half of the screen: drag to rotate the camera |
-| Edit voxel | Right half: a short tap (not a drag) edits the block under the crosshair — remove or place, per the −/+ button (no-op in tour mode) |
+| Edit voxel | Right half: a short tap (not a drag) edits the block under the crosshair — remove or place, per the −/+ button (hidden in tour mode, see below) |
 | Jump (play mode) | ⏶ button |
 | Fly up / down (sandbox mode) | ▲ / ▼ buttons |
 | Switch mode (sandbox → play → tour → sandbox) | ⇄ button |
-| Place/remove toggle | −/+ button |
+| Place/remove toggle | −/+ button (hidden in tour mode) |
 | Mute / unmute | 🔊 button |
-| Select block | Tap a palette swatch |
+| Select block | Tap a palette swatch (palette hidden in tour mode) |
 
 Touch look/edit always aims at the screen-center crosshair — the same point
 used for the target-block highlight and desktop mouse aiming — rather than

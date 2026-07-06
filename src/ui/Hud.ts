@@ -13,6 +13,7 @@ const MODE_FLASH_MS = 500;
 
 /** CSS crosshair + mode indicator + controls hint line, plain DOM overlay. */
 export class Hud {
+  private readonly crosshairEl: HTMLElement;
   private readonly modeEl: HTMLElement;
   private readonly hintEl: HTMLElement;
   private readonly elevatorHintEl: HTMLElement;
@@ -21,9 +22,9 @@ export class Hud {
   private flashTimeout: ReturnType<typeof setTimeout> | undefined;
 
   constructor(container: HTMLElement) {
-    const crosshair = document.createElement('div');
-    crosshair.className = 'hud-crosshair';
-    container.appendChild(crosshair);
+    this.crosshairEl = document.createElement('div');
+    this.crosshairEl.className = 'hud-crosshair';
+    container.appendChild(this.crosshairEl);
 
     this.modeEl = document.createElement('div');
     this.modeEl.className = 'hud-mode';
@@ -54,6 +55,10 @@ export class Hud {
     this.modeEl.classList.toggle('play', mode === 'play');
     this.modeEl.classList.toggle('tour', mode === 'tour');
     this.hintEl.textContent = HINTS[mode];
+    // Tour disables the raycast highlight and all editing (see main.ts's
+    // `currentMode === 'tour'` guards); an aim reticle with nothing to aim
+    // at would misleadingly imply otherwise, so hide it for the duration.
+    this.crosshairEl.classList.toggle('hidden', mode === 'tour');
 
     if (changed) this.flashModeIndicator();
   }

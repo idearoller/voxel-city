@@ -206,6 +206,7 @@ const hud = new Hud(uiRoot);
 const palette = new Palette(uiRoot, canvas);
 const errorToast = new ErrorToast(uiRoot);
 modeManager.onModeChange((mode) => hud.setMode(mode));
+modeManager.onModeChange((mode) => palette.setMode(mode));
 
 // Dev-only FPS readout, toggled with F3; never constructed in a production build.
 const fpsCounter = import.meta.env.DEV ? new FpsCounter(uiRoot) : null;

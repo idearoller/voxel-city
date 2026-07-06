@@ -1,5 +1,13 @@
 import { AIR, BLOCK_DEFS, type BlockDef } from '../world/BlockRegistry';
 
+/**
+ * Kept as a plain string union rather than importing `player/ModeManager`'s
+ * `Mode` — this file (like the rest of `ui/`, see `Toolbar.QualityTier`'s
+ * doc comment) has no dependency on code outside `ui/`; `main.ts` is what
+ * wires the two together.
+ */
+export type PaletteMode = 'sandbox' | 'play' | 'tour';
+
 /** Every placeable block (all block defs except AIR), in registry order. */
 const PLACEABLE_BLOCKS: readonly BlockDef[] = BLOCK_DEFS.filter((block) => block.id !== AIR);
 
@@ -70,6 +78,18 @@ export class Palette {
 
   get selectedBlockId(): number {
     return (PLACEABLE_BLOCKS[this.selectedIndex] as BlockDef).id;
+  }
+
+  /**
+   * Hides the whole swatch bar in tour mode: editing is disabled there (see
+   * main.ts's `currentMode === 'tour'` guards on both voxel edits and the
+   * touch edit-mode button/`Hud` crosshair), so a block selector would be
+   * offering a choice that can never be placed. Sandbox and play both show
+   * it unconditionally today (there is no existing precedent for hiding it
+   * in either), so tour is the only mode this newly gates off.
+   */
+  setMode(mode: PaletteMode): void {
+    this.root.classList.toggle('hidden', mode === 'tour');
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
